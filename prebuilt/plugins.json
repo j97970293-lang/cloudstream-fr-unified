@@ -1,0 +1,26 @@
+[
+    {
+        "iconUrl": "https://www.google.com/s2/favicons?domain=themoviedb.org&sz=256",
+        "fileHash": "sha256-bb3a2df112fee6ff10acd2ae583a37d5c998576ecc1dbd13092d41a0d538e2fb",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/USER/cloudstream-fr-unified",
+        "fileSize": 63961,
+        "status": 1,
+        "language": "fr",
+        "authors": [
+            "FR-Unified"
+        ],
+        "tvTypes": [
+            "Movie",
+            "TvSeries",
+            "Anime",
+            "AnimeMovie",
+            "Cartoon"
+        ],
+        "version": 1,
+        "internalName": "FrUnified",
+        "description": "Catalogue unique FR (TMDB + AniList) : une seule extension qui agr\u00e8ge la recherche et les liens de toutes les extensions fran\u00e7aises install\u00e9es (French-Stream, Movix, Wiflix, FrenchAnime, Frembed, FSTV, Karma, etc.).",
+        "url": "https://raw.githubusercontent.com/USER/cloudstream-fr-unified/builds/FrUnified.cs3",
+        "name": "FrUnified"
+    }
+]

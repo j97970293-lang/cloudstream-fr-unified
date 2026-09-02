@@ -1,0 +1,72 @@
+name: Build
+
+concurrency:
+  group: "build"
+  cancel-in-progress: true
+
+on:
+  push:
+    branches:
+      - master
+      - main
+    paths-ignore:
+      - "*.md"
+      - "repo.json"
+      - ".github/**"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+        with:
+          path: "src"
+
+      - name: Checkout builds branch
+        uses: actions/checkout@v4
+        with:
+          ref: "builds"
+          path: "builds"
+          continue-on-error: true
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*') }}
+          restore-keys: ${{ runner.os }}-gradle-
+
+      - name: Build plugins
+        run: |
+          cd $GITHUB_WORKSPACE/src
+          chmod +x gradlew
+          ./gradlew make makePluginsJson --stacktrace
+          mkdir -p $GITHUB_WORKSPACE/output
+          cp **/build/*.cs3 $GITHUB_WORKSPACE/output || true
+          cp build/plugins.json $GITHUB_WORKSPACE/output
+
+      - name: Push builds branch
+        run: |
+          cd $GITHUB_WORKSPACE/builds || { mkdir -p $GITHUB_WORKSPACE/builds && cd $GITHUB_WORKSPACE/builds && git init -b builds; }
+          rm -f *.cs3 plugins.json
+          cp $GITHUB_WORKSPACE/output/* .
+          git config --local user.email "actions@github.com"
+          git config --local user.name "GitHub Actions"
+          git add .
+          git commit -m "Build $(date -u '+%Y-%m-%d %H:%M UTC')" || echo "Nothing to commit"
+          git remote remove origin 2>/dev/null || true
+          git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+          git push -f origin builds

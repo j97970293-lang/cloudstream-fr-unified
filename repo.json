@@ -1,0 +1,9 @@
+{
+  "name": "FR Unifié",
+  "description": "Catalogue unique français (TMDB + AniList) qui fait fonctionner toutes les extensions FR installées.",
+  "manifestVersion": 2,
+  "iconUrl": "https://www.google.com/s2/favicons?domain=themoviedb.org&sz=256",
+  "pluginLists": [
+    "https://raw.githubusercontent.com/USER/cloudstream-fr-unified/builds/plugins.json"
+  ]
+}
