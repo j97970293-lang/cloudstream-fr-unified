@@ -49,11 +49,28 @@ jobs:
           key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*') }}
           restore-keys: ${{ runner.os }}-gradle-
 
+      - name: Réveiller JitPack (compile l'artefact si besoin)
+        continue-on-error: true
+        run: |
+          curl -s -m 600 "https://jitpack.io/com/github/recloudstream/gradle/-SNAPSHOT/maven-metadata.xml" > /dev/null
+          curl -s -m 600 "https://jitpack.io/com/github/recloudstream/cloudstream/library/-SNAPSHOT/maven-metadata.xml" > /dev/null
+
       - name: Build plugins
         run: |
           cd $GITHUB_WORKSPACE/src
           chmod +x gradlew
-          ./gradlew make makePluginsJson --stacktrace
+          # JitPack compile ses artefacts à la demande : on retente si la 1re résolution échoue
+          for attempt in 1 2 3; do
+            echo "::group::Tentative $attempt"
+            if ./gradlew make makePluginsJson --stacktrace; then
+              echo "::endgroup::"
+              break
+            fi
+            echo "::endgroup::"
+            if [ "$attempt" = "3" ]; then exit 1; fi
+            echo "Échec (JitPack probablement en cours de build) — nouvelle tentative dans 60 s"
+            sleep 60
+          done
           mkdir -p $GITHUB_WORKSPACE/output
           cp **/build/*.cs3 $GITHUB_WORKSPACE/output || true
           cp build/plugins.json $GITHUB_WORKSPACE/output
