@@ -65,16 +65,19 @@ jobs:
           cd $GITHUB_WORKSPACE/src
           chmod +x gradlew
           # JitPack compile ses artefacts à la demande : on retente si la 1re résolution échoue
+          EXTRA=""
           for attempt in 1 2 3; do
             echo "::group::Tentative $attempt"
-            if ./gradlew make makePluginsJson --stacktrace; then
+            if ./gradlew make makePluginsJson --stacktrace $EXTRA; then
               echo "::endgroup::"
               break
             fi
             echo "::endgroup::"
             if [ "$attempt" = "3" ]; then exit 1; fi
-            echo "Échec (JitPack probablement en cours de build) — nouvelle tentative dans 60 s"
-            sleep 60
+            echo "Échec (JitPack probablement en cours de build) — nouvelle tentative dans 120 s"
+            # invalide le cache négatif de Gradle sur les artefacts JitPack manquants
+            EXTRA="--refresh-dependencies"
+            sleep 120
           done
           mkdir -p $GITHUB_WORKSPACE/output
           cp **/build/*.cs3 $GITHUB_WORKSPACE/output || true
