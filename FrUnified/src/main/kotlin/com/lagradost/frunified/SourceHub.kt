@@ -8,10 +8,10 @@ import com.lagradost.cloudstream3.LoadResponse
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.MovieLoadResponse
 import com.lagradost.cloudstream3.MovieSearchResponse
-import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvSeriesLoadResponse
 import com.lagradost.cloudstream3.TvSeriesSearchResponse
+import com.lagradost.cloudstream3.syncproviders.SyncIdName
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -23,12 +23,10 @@ import java.util.concurrent.ConcurrentHashMap
  * Moteur d'agrégation : c'est lui qui « fait fonctionner » toutes les
  * extensions françaises derrière le catalogue unique.
  *
- * Principe : au lieu de recopier (et de devoir maintenir) le scraping de
- * French-Stream, Movix, Wiflix, FrenchAnime, Frembed, FSTV, Karma…, on
- * réutilise directement les providers déjà installés dans CloudStream via
- * [APIHolder]. Pour une fiche du catalogue, on interroge chaque source en
- * parallèle, on apparie le bon contenu ([TitleMatch]) puis on relaie ses
- * liens vers le lecteur, en les préfixant du nom de la source.
+ * Important : l'accès à la liste des providers installés se fait par
+ * RÉFLEXION. Le type de `APIHolder.apis` a changé selon les versions de
+ * CloudStream (List puis AtomicList) ; un accès direct provoquait un
+ * NoSuchMethodError au chargement d'une fiche sur certaines versions.
  */
 object SourceHub {
 
@@ -40,49 +38,80 @@ object SourceHub {
     private val FRENCH_LANGS = setOf("fr", "fr-fr", "fra", "french")
 
     /** Sources à ignorer (méta-providers, doublons, agrégateurs). */
-    private val BLACKLIST = setOf(
-        FrUnifiedProvider.PROVIDER_NAME,
-        "Multi", "MultiFR"
-    )
+    private val BLACKLIST = setOf(FrUnifiedProvider.PROVIDER_NAME, "Multi", "MultiFR")
 
-    /** Cache court : fiche du catalogue -> (source -> url trouvée). */
     private val matchCache = ConcurrentHashMap<String, Pair<Long, String?>>()
     private const val MATCH_TTL_MS = 30 * 60 * 1000L
 
-    /** Toutes les extensions françaises installées, hors nous-mêmes. */
-    fun frenchSources(): List<MainAPI> {
-        val fromApis = runCatching {
-            APIHolder.apis.withLock { APIHolder.apis.toList() }
-        }.getOrNull().orEmpty()
+    // ------------------------------------------------------- découverte
 
-        val fromAll = runCatching {
-            APIHolder.allProviders.withLock { APIHolder.allProviders.toList() }
-        }.getOrNull().orEmpty()
+    /** Lit `APIHolder.apis` / `APIHolder.allProviders` sans dépendre de leur type. */
+    private fun providersByReflection(): List<MainAPI> {
+        val found = LinkedHashSet<MainAPI>()
+        val holder: Any = APIHolder
+        val clazz = holder.javaClass
 
-        return (fromApis + fromAll)
+        for (member in listOf("apis", "allProviders")) {
+            runCatching {
+                val value = runCatching {
+                    clazz.getMethod("get" + member.replaceFirstChar { it.uppercase() }).invoke(holder)
+                }.getOrElse {
+                    clazz.getDeclaredField(member).apply { isAccessible = true }.get(holder)
+                }
+                when (value) {
+                    is Iterable<*> -> value.toList()
+                    is Array<*> -> value.toList()
+                    else -> emptyList<Any?>()
+                }.forEach { entry -> (entry as? MainAPI)?.let { found.add(it) } }
+            }
+        }
+        return found.toList()
+    }
+
+    /** Toutes les extensions françaises installées (avant filtrage utilisateur). */
+    fun detectedSources(): List<MainAPI> = runCatching {
+        providersByReflection()
             .distinctBy { it.name }
             .filter { api ->
                 api.name !in BLACKLIST &&
-                    api.lang.lowercase() in FRENCH_LANGS &&
-                    api.mainUrl.isNotBlank()
+                    runCatching { api.lang.lowercase() in FRENCH_LANGS }.getOrDefault(false)
             }
             .sortedBy { it.name.lowercase() }
-    }
+    }.getOrDefault(emptyList())
+
+    /** Sources réellement utilisées (celles cochées dans les réglages). */
+    fun activeSources(): List<MainAPI> =
+        if (!FrSettings.useLocalSources) emptyList()
+        else detectedSources().filter { FrSettings.isSourceEnabled(it.name) }
+
+    // --------------------------------------------------- appariement
 
     /**
-     * Cherche la fiche sur une source donnée et renvoie l'URL de la page
-     * correspondante (ou null si rien de suffisamment ressemblant).
+     * Localise la fiche sur une source.
+     *
+     * 1. Les extensions qui exploitent déjà TMDB/IMDb (Frembed, Movix…) exposent
+     *    `supportedSyncNames` : on leur passe directement l'ID, sans recherche
+     *    textuelle — c'est exact et instantané.
+     * 2. Sinon, recherche textuelle multi-titres + appariement [TitleMatch].
      */
     private suspend fun locate(api: MainAPI, payload: PlayPayload): String? {
-        val cacheKey = "${api.name}|${payload.tmdbId ?: payload.anilistId ?: payload.primaryTitle}|${payload.year}"
+        val cacheKey = "${api.name}|${payload.tmdbId ?: payload.anilistId ?: payload.malId ?: payload.primaryTitle}|${payload.year}"
         val now = System.currentTimeMillis()
         matchCache[cacheKey]?.let { (expiry, url) -> if (expiry > now) return url }
 
-        val queries = payload.titles
-            .map { it.trim() }
+        val direct = withTimeoutOrNull(SEARCH_TIMEOUT_MS) { locateBySyncId(api, payload) }
+        if (direct != null) {
+            matchCache[cacheKey] = (now + MATCH_TTL_MS) to direct
+            return direct
+        }
+
+        val queries = buildList {
+            payload.titles.forEach { add(it) }
+            payload.year?.let { year -> payload.titles.firstOrNull()?.let { add("$it $year") } }
+        }.map { it.trim() }
             .filter { it.isNotBlank() }
-            .distinctBy { TitleMatch.normalize(it) }
-            .take(3)
+            .distinctBy { TitleMatch.normalize(it) + it.count { c -> c.isDigit() } }
+            .take(4)
 
         var best: Pair<Double, String>? = null
 
@@ -106,7 +135,6 @@ object SourceHub {
                 }
             }
 
-            // Correspondance quasi parfaite : inutile d'essayer les autres titres.
             if ((best?.first ?: 0.0) >= 0.95) break
         }
 
@@ -115,7 +143,27 @@ object SourceHub {
         return url
     }
 
-    /** Choisit l'entrée à lire dans la fiche renvoyée par la source. */
+    /** Résolution directe par identifiant (IMDb / MAL / AniList / Simkl). */
+    private suspend fun locateBySyncId(api: MainAPI, payload: PlayPayload): String? {
+        val supported = runCatching { api.supportedSyncNames }.getOrNull().orEmpty()
+        if (supported.isEmpty()) return null
+
+        val candidates = buildList {
+            payload.imdbId?.let { add(SyncIdName.Imdb to it) }
+            payload.malId?.let { add(SyncIdName.MyAnimeList to it.toString()) }
+            payload.anilistId?.let { add(SyncIdName.Anilist to it.toString()) }
+        }
+
+        for ((name, id) in candidates) {
+            if (name !in supported) continue
+            val url = runCatching { api.getLoadUrl(name, id) }.getOrNull()
+            if (!url.isNullOrBlank()) return url
+        }
+        return null
+    }
+
+    // ------------------------------------------------------- sélection
+
     private fun pickData(response: LoadResponse, payload: PlayPayload): String? {
         if (!payload.isSeries) {
             return when (response) {
@@ -137,31 +185,27 @@ object SourceHub {
         }
         if (episodes.isEmpty()) return null
 
-        // 1. saison + épisode exacts
         episodes.firstOrNull { it.season == season && it.episode == episode }?.let { return it.data }
-        // 2. saison implicite (sources qui ne renseignent pas la saison)
         episodes.firstOrNull { (it.season == null || it.season == 1) && it.episode == episode && season == 1 }
             ?.let { return it.data }
-        // 3. numérotation absolue (fréquent sur les sites d'animés)
         payload.absoluteEpisode?.let { abs ->
             episodes.firstOrNull { it.episode == abs }?.let { return it.data }
             episodes.getOrNull(abs - 1)?.let { return it.data }
         }
-        // 4. position dans la liste
         return if (season == 1) episodes.getOrNull(episode - 1)?.data else null
     }
 
-    /** Épisodes d'un [AnimeLoadResponse], VF d'abord (public francophone). */
     private fun anyEpisodes(response: AnimeLoadResponse): List<Episode> =
-        response.episodes[DubStatus.Dubbed]
-            ?: response.episodes[DubStatus.Subbed]
-            ?: response.episodes.values.firstOrNull()
-            ?: emptyList()
+        runCatching {
+            response.episodes[DubStatus.Dubbed]
+                ?: response.episodes[DubStatus.Subbed]
+                ?: response.episodes.values.firstOrNull()
+        }.getOrNull() ?: emptyList()
+
+    // ----------------------------------------------------- agrégation
 
     /**
-     * Récupère les liens de TOUTES les sources françaises installées, en
-     * parallèle, pour la fiche demandée.
-     *
+     * Récupère les liens de toutes les sources actives, en parallèle.
      * @return le nombre de sources ayant fourni au moins un lien.
      */
     suspend fun aggregateLinks(
@@ -169,13 +213,15 @@ object SourceHub {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Int = coroutineScope {
-        val sources = frenchSources()
+        val sources = activeSources()
         if (sources.isEmpty()) return@coroutineScope 0
 
         sources.map { api ->
             async {
                 runCatching {
-                    withTimeoutOrNull(LINKS_TIMEOUT_MS) { linksFrom(api, payload, subtitleCallback, callback) } ?: false
+                    withTimeoutOrNull(LINKS_TIMEOUT_MS) {
+                        linksFrom(api, payload, subtitleCallback, callback)
+                    } ?: false
                 }.getOrDefault(false)
             }
         }.awaitAll().count { it }
@@ -208,7 +254,6 @@ object SourceHub {
     /** Préfixe le lien par le nom de la source pour rester lisible dans le lecteur. */
     @Suppress("DEPRECATION")
     private fun rename(api: MainAPI, link: ExtractorLink): ExtractorLink {
-        // Les sous-classes (DRM, torrent…) sont relayées telles quelles pour ne rien perdre.
         if (link.javaClass != ExtractorLink::class.java) return link
         return runCatching {
             ExtractorLink(
@@ -225,14 +270,22 @@ object SourceHub {
         }.getOrDefault(link)
     }
 
-    /** Utilisé par la fiche pour afficher les sources détectées. */
-    fun sourcesSummary(): String {
-        val names = frenchSources().map { it.name }
-        return if (names.isEmpty()) {
-            "⚠️ Aucune extension française détectée : installez les addons FR " +
-                "(French-Stream, Movix, Wiflix, FrenchAnime, Frembed, FSTV…) puis relancez l'app."
-        } else {
-            "🔗 ${names.size} source(s) branchée(s) : ${names.joinToString(", ")}"
+    /** Résumé affiché dans la description d'une fiche. */
+    fun sourcesSummary(): String = runCatching {
+        val detected = detectedSources().map { it.name }
+        val active = activeSources().map { it.name }
+        val stremio = if (FrSettings.useStremio) FrSettings.stremioUrls.size else 0
+
+        buildString {
+            if (detected.isEmpty()) {
+                append("⚠️ Aucune extension française détectée. Installez les addons FR ")
+                append("(French-Stream, Movix, Wiflix, FrenchAnime, Frembed, FSTV…) : ")
+                append("FR Unifié s'en sert pour trouver les liens.")
+            } else {
+                append("🔗 ${active.size}/${detected.size} source(s) active(s) : ")
+                append(active.joinToString(", ").ifBlank { "aucune (tout est désactivé dans les réglages)" })
+            }
+            if (stremio > 0) append("\n🧩 $stremio addon(s) Stremio configuré(s)")
         }
-    }
+    }.getOrDefault("")
 }

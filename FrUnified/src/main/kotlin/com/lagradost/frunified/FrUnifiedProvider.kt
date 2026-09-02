@@ -27,18 +27,20 @@ import com.lagradost.cloudstream3.newMovieSearchResponse
 import com.lagradost.cloudstream3.newTvSeriesLoadResponse
 import com.lagradost.cloudstream3.newTvSeriesSearchResponse
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 
 /**
  * FR Unifié — UN catalogue, TOUTES les sources françaises.
  *
- * - Catalogue : TMDB (films / séries / animation) + AniList (animés).
- * - Recherche : une seule entrée, dédupliquée, en français.
- * - Lecture : [SourceHub] interroge en parallèle toutes les extensions FR
- *   installées et remonte leurs liens dans la même fiche.
+ * Toutes les écritures de champs « avancés » (score, acteurs, trailers, IDs de
+ * synchronisation…) sont protégées par [safe] : selon la version de CloudStream
+ * installée, certaines de ces API n'existent pas et lèvent un NoSuchMethodError
+ * qui ferait échouer tout le chargement de la fiche.
  */
 class FrUnifiedProvider : MainAPI() {
 
@@ -72,10 +74,16 @@ class FrUnifiedProvider : MainAPI() {
         "tmdb|tv/top_rated" to "⭐ Séries les mieux notées"
     )
 
+    /** Exécute un bloc en avalant toute erreur de liaison (API absente selon la version). */
+    private inline fun safe(block: () -> Unit) {
+        runCatching { block() }
+    }
+
     // ---------------------------------------------------------------- accueil
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val (catalog, target) = request.data.split("|", limit = 2).let { it[0] to it.getOrElse(1) { "" } }
+        val (catalog, target) = request.data.split("|", limit = 2)
+            .let { it[0] to it.getOrElse(1) { "" } }
 
         val items = when (catalog) {
             "anime" -> AnimeCatalog.row(target, page)
@@ -98,15 +106,11 @@ class FrUnifiedProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> = coroutineScope {
         val tmdb = async { runCatching { TmdbCatalog.search(query) }.getOrDefault(emptyList()) }
-        val anilist = async { runCatching { AnimeCatalog.search(query) }.getOrDefault(emptyList()) }
+        val anime = async { runCatching { AnimeCatalog.search(query) }.getOrDefault(emptyList()) }
 
         val tmdbItems = tmdb.await()
         val seen = tmdbItems.map { TitleMatch.normalize(it.title) }.toMutableSet()
-
-        val animeItems = anilist.await().filter { item ->
-            // On complète le catalogue TMDB avec les animés absents, sans doublon visuel.
-            seen.add(TitleMatch.normalize(item.title))
-        }
+        val animeItems = anime.await().filter { item -> seen.add(TitleMatch.normalize(item.title)) }
 
         (tmdbItems + animeItems).map { it.toSearchResponse() }
     }
@@ -122,44 +126,52 @@ class FrUnifiedProvider : MainAPI() {
         }
     }
 
+    private fun describe(overview: String?): String = buildString {
+        overview?.let { append(it).append("\n\n") }
+        append(runCatching { SourceHub.sourcesSummary() }.getOrDefault(""))
+    }.trim()
+
     private suspend fun loadTmdb(id: CatalogId): LoadResponse? {
         val details = TmdbCatalog.details(id) ?: return null
         val item = TmdbCatalog.toItem(details, id.kind) ?: return null
         val alternatives = runCatching { TmdbCatalog.alternativeTitles(id) }.getOrDefault(emptyList())
         val titles = (item.titles + alternatives).distinctBy { TitleMatch.normalize(it) }
 
-        val imdbId = details.optJSONObject("external_ids")?.optString("imdb_id")?.takeIf { it.startsWith("tt") }
-        val genres = details.optJSONArray("genres")?.let { array ->
-            (0 until array.length()).mapNotNull { array.optJSONObject(it)?.optString("name") }
-        }.orEmpty()
+        val imdbId = runCatching {
+            details.optJSONObject("external_ids")?.optString("imdb_id")?.takeIf { it.startsWith("tt") }
+        }.getOrNull()
+
+        val genres = runCatching {
+            details.optJSONArray("genres")?.let { array ->
+                (0 until array.length()).mapNotNull { array.optJSONObject(it)?.optString("name") }
+            }
+        }.getOrNull().orEmpty()
+
         val isAnimation = genres.any { it.contains("Animation", true) }
         val isJapanese = details.optString("original_language") == "ja"
 
-        val actors = details.optJSONObject("credits")?.optJSONArray("cast")?.let { cast ->
-            (0 until minOf(cast.length(), 20)).mapNotNull { i ->
-                val person = cast.optJSONObject(i) ?: return@mapNotNull null
-                val actorName = person.optString("name").takeIf { it.isNotBlank() } ?: return@mapNotNull null
-                Actor(actorName, TmdbCatalog.image(person.optString("profile_path"), "w185")) to
-                    person.optString("character").takeIf { it.isNotBlank() }
+        val actors = runCatching {
+            details.optJSONObject("credits")?.optJSONArray("cast")?.let { cast ->
+                (0 until minOf(cast.length(), 20)).mapNotNull { i ->
+                    val person = cast.optJSONObject(i) ?: return@mapNotNull null
+                    val actorName = person.optString("name").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                    Actor(actorName, TmdbCatalog.image(person.optString("profile_path"), "w185")) to
+                        person.optString("character").takeIf { it.isNotBlank() }
+                }
             }
-        }
+        }.getOrNull()
 
-        val trailer = details.optJSONObject("videos")?.optJSONArray("results")?.let { videos ->
-            (0 until videos.length()).mapNotNull { videos.optJSONObject(it) }
-                .firstOrNull { it.optString("site") == "YouTube" && it.optString("type") == "Trailer" }
-                ?.optString("key")
-        }?.let { "https://www.youtube.com/watch?v=$it" }
+        val trailers = runCatching { youtubeTrailers(details) }.getOrDefault(emptyList())
 
-        val recommendations = details.optJSONObject("recommendations")?.optJSONArray("results")?.let { results ->
-            (0 until results.length()).mapNotNull { i ->
-                results.optJSONObject(i)?.let { TmdbCatalog.toItem(it)?.toSearchResponse() }
+        val recommendations = runCatching {
+            details.optJSONObject("recommendations")?.optJSONArray("results")?.let { results ->
+                (0 until results.length()).mapNotNull { i ->
+                    results.optJSONObject(i)?.let { TmdbCatalog.toItem(it)?.toSearchResponse() }
+                }
             }
-        }.orEmpty()
+        }.getOrNull().orEmpty()
 
-        val plot = buildString {
-            item.overview?.let { append(it).append("\n\n") }
-            append(SourceHub.sourcesSummary())
-        }
+        val plot = describe(item.overview)
 
         if (id.kind == "movie") {
             val payload = PlayPayload(
@@ -182,33 +194,37 @@ class FrUnifiedProvider : MainAPI() {
                 this.year = item.year
                 this.plot = plot
                 this.tags = genres
-                this.score = Score.from10(item.rating10)
-                this.duration = details.optInt("runtime").takeIf { it > 0 }
-                this.recommendations = recommendations
-                addActors(actors)
-                addTMDbId(id.id)
-                addImdbId(imdbId)
-                addTrailer(trailer)
+                safe { this.score = Score.from10(item.rating10) }
+                safe { this.duration = details.optInt("runtime").takeIf { it > 0 } }
+                safe { this.recommendations = recommendations }
+                safe { addActors(actors) }
+                safe { addTMDbId(id.id) }
+                safe { addImdbId(imdbId) }
+                trailers.forEach { url -> safe { addTrailer(url) } }
             }
         }
 
-        // Série : on construit les épisodes à partir des saisons TMDB.
-        val seasonNumbers = details.optJSONArray("seasons")?.let { seasons ->
-            (0 until seasons.length()).mapNotNull { i ->
-                seasons.optJSONObject(i)?.optInt("season_number")
-            }.filter { it > 0 }
-        }.orEmpty().ifEmpty { listOf(1) }
+        val seasonNumbers = runCatching {
+            details.optJSONArray("seasons")?.let { seasons ->
+                (0 until seasons.length()).mapNotNull { i -> seasons.optJSONObject(i)?.optInt("season_number") }
+                    .filter { it > 0 }
+            }
+        }.getOrNull().orEmpty().ifEmpty { listOf(1) }
 
         val episodes = coroutineScope {
             seasonNumbers.take(40).map { seasonNumber ->
-                async { buildSeason(id, seasonNumber, titles, item.year, imdbId) }
+                async { runCatching { buildSeason(id, seasonNumber, titles, item.year, imdbId) }.getOrDefault(emptyList()) }
             }.awaitAll().flatten()
         }
 
         return newTvSeriesLoadResponse(
             item.title,
             id.serialize(),
-            if (isAnimation && isJapanese) TvType.Anime else if (isAnimation) TvType.Cartoon else TvType.TvSeries,
+            when {
+                isAnimation && isJapanese -> TvType.Anime
+                isAnimation -> TvType.Cartoon
+                else -> TvType.TvSeries
+            },
             episodes
         ) {
             this.posterUrl = item.posterUrl
@@ -216,13 +232,28 @@ class FrUnifiedProvider : MainAPI() {
             this.year = item.year
             this.plot = plot
             this.tags = genres
-            this.score = Score.from10(item.rating10)
-            this.recommendations = recommendations
-            addActors(actors)
-            addTMDbId(id.id)
-            addImdbId(imdbId)
-            addTrailer(trailer)
+            safe { this.score = Score.from10(item.rating10) }
+            safe { this.recommendations = recommendations }
+            safe { addActors(actors) }
+            safe { addTMDbId(id.id) }
+            safe { addImdbId(imdbId) }
+            trailers.forEach { url -> safe { addTrailer(url) } }
         }
+    }
+
+    /** Bandes-annonces YouTube TMDB, VF prioritaire. */
+    private fun youtubeTrailers(details: JSONObject): List<String> {
+        val videos = details.optJSONObject("videos")?.optJSONArray("results") ?: return emptyList()
+        val all = (0 until videos.length()).mapNotNull { videos.optJSONObject(it) }
+            .filter { it.optString("site").equals("YouTube", true) }
+            .filter { it.optString("key").isNotBlank() }
+
+        val ranked = all.sortedWith(
+            compareByDescending<JSONObject> { it.optString("iso_639_1") == "fr" }
+                .thenByDescending { it.optString("type") == "Trailer" }
+                .thenByDescending { it.optBoolean("official") }
+        )
+        return ranked.take(3).map { "https://www.youtube.com/watch?v=${it.optString("key")}" }
     }
 
     private suspend fun buildSeason(
@@ -253,9 +284,9 @@ class FrUnifiedProvider : MainAPI() {
                 this.name = episodeJson.optString("name").takeIf { it.isNotBlank() }
                 this.season = seasonNumber
                 this.episode = episodeNumber
-                this.posterUrl = TmdbCatalog.image(episodeJson.optString("still_path"), "w300")
-                this.description = episodeJson.optString("overview").takeIf { it.isNotBlank() }
-                this.runTime = episodeJson.optInt("runtime").takeIf { it > 0 }
+                safe { this.posterUrl = TmdbCatalog.image(episodeJson.optString("still_path"), "w300") }
+                safe { this.description = episodeJson.optString("overview").takeIf { it.isNotBlank() } }
+                safe { this.runTime = episodeJson.optInt("runtime").takeIf { it > 0 } }
             }
         }
     }
@@ -265,14 +296,13 @@ class FrUnifiedProvider : MainAPI() {
         val item = AniListCatalog.item(media) ?: return null
         val titles = AniListCatalog.allTitles(media).ifEmpty { item.titles }
         val malId = media.optInt("idMal").takeIf { it > 0 }
-        val genres = media.optJSONArray("genres")?.let { array ->
-            (0 until array.length()).mapNotNull { array.optString(it).takeIf { g -> g.isNotBlank() } }
-        }.orEmpty()
+        val genres = runCatching {
+            media.optJSONArray("genres")?.let { array ->
+                (0 until array.length()).mapNotNull { array.optString(it).takeIf { g -> g.isNotBlank() } }
+            }
+        }.getOrNull().orEmpty()
 
-        val plot = buildString {
-            item.overview?.let { append(it).append("\n\n") }
-            append(SourceHub.sourcesSummary())
-        }
+        val plot = describe(item.overview)
 
         if (media.optString("format") == "MOVIE") {
             val payload = PlayPayload(
@@ -290,30 +320,14 @@ class FrUnifiedProvider : MainAPI() {
                 this.year = item.year
                 this.plot = plot
                 this.tags = genres
-                this.score = Score.from10(item.rating10)
-                addAniListId(id.id.toIntOrNull())
-                addMalId(malId)
+                safe { this.score = Score.from10(item.rating10) }
+                safe { addAniListId(id.id.toIntOrNull()) }
+                safe { addMalId(malId) }
             }
         }
 
         val count = media.optInt("episodes").takeIf { it > 0 } ?: 24
-        val episodes = (1..count).map { number ->
-            val payload = PlayPayload(
-                kind = "anime",
-                titles = titles,
-                year = item.year,
-                season = 1,
-                episode = number,
-                absoluteEpisode = number,
-                anilistId = id.id.toIntOrNull(),
-                malId = malId
-            )
-            newEpisode(payload.serialize()) {
-                this.name = "Épisode $number"
-                this.season = 1
-                this.episode = number
-            }
-        }
+        val episodes = animeEpisodes(titles, item.year, count, anilistId = id.id.toIntOrNull(), malId = malId)
 
         return newAnimeLoadResponse(item.title, id.serialize(), TvType.Anime) {
             this.posterUrl = item.posterUrl
@@ -321,13 +335,15 @@ class FrUnifiedProvider : MainAPI() {
             this.year = item.year
             this.plot = plot
             this.tags = genres
-            this.score = Score.from10(item.rating10)
-            this.episodes = mutableMapOf(
-                DubStatus.Dubbed to episodes,
-                DubStatus.Subbed to episodes
-            )
-            addAniListId(id.id.toIntOrNull())
-            addMalId(malId)
+            safe { this.score = Score.from10(item.rating10) }
+            safe {
+                this.episodes = mutableMapOf(
+                    DubStatus.Dubbed to episodes,
+                    DubStatus.Subbed to episodes
+                )
+            }
+            safe { addAniListId(id.id.toIntOrNull()) }
+            safe { addMalId(malId) }
         }
     }
 
@@ -336,14 +352,17 @@ class FrUnifiedProvider : MainAPI() {
         val item = JikanCatalog.item(data) ?: return null
         val titles = JikanCatalog.allTitles(data).ifEmpty { item.titles }
         val malId = id.id.toIntOrNull()
-        val genres = data.optJSONArray("genres")?.let { array ->
-            (0 until array.length()).mapNotNull { array.optJSONObject(it)?.optString("name") }
-        }.orEmpty()
+        val genres = runCatching {
+            data.optJSONArray("genres")?.let { array ->
+                (0 until array.length()).mapNotNull { array.optJSONObject(it)?.optString("name") }
+            }
+        }.getOrNull().orEmpty()
 
-        val plot = buildString {
-            item.overview?.let { append(it).append("\n\n") }
-            append(SourceHub.sourcesSummary())
-        }
+        val trailer = runCatching {
+            data.optJSONObject("trailer")?.optString("url")?.takeIf { it.startsWith("http") }
+        }.getOrNull()
+
+        val plot = describe(item.overview)
 
         if (data.optString("type").equals("Movie", true)) {
             val payload = PlayPayload(
@@ -359,40 +378,53 @@ class FrUnifiedProvider : MainAPI() {
                 this.year = item.year
                 this.plot = plot
                 this.tags = genres
-                this.score = Score.from10(item.rating10)
-                addMalId(malId)
+                safe { this.score = Score.from10(item.rating10) }
+                safe { addMalId(malId) }
+                safe { addTrailer(trailer) }
             }
         }
 
         val count = data.optInt("episodes").takeIf { it > 0 } ?: 24
-        val episodes = (1..count).map { number ->
-            val payload = PlayPayload(
-                kind = "anime",
-                titles = titles,
-                year = item.year,
-                season = 1,
-                episode = number,
-                absoluteEpisode = number,
-                malId = malId
-            )
-            newEpisode(payload.serialize()) {
-                this.name = "Épisode $number"
-                this.season = 1
-                this.episode = number
-            }
-        }
+        val episodes = animeEpisodes(titles, item.year, count, anilistId = null, malId = malId)
 
         return newAnimeLoadResponse(item.title, id.serialize(), TvType.Anime) {
             this.posterUrl = item.posterUrl
             this.year = item.year
             this.plot = plot
             this.tags = genres
-            this.score = Score.from10(item.rating10)
-            this.episodes = mutableMapOf(
-                DubStatus.Dubbed to episodes,
-                DubStatus.Subbed to episodes
-            )
-            addMalId(malId)
+            safe { this.score = Score.from10(item.rating10) }
+            safe {
+                this.episodes = mutableMapOf(
+                    DubStatus.Dubbed to episodes,
+                    DubStatus.Subbed to episodes
+                )
+            }
+            safe { addMalId(malId) }
+            safe { addTrailer(trailer) }
+        }
+    }
+
+    private fun animeEpisodes(
+        titles: List<String>,
+        year: Int?,
+        count: Int,
+        anilistId: Int?,
+        malId: Int?
+    ): List<Episode> = (1..count).map { number ->
+        val payload = PlayPayload(
+            kind = "anime",
+            titles = titles,
+            year = year,
+            season = 1,
+            episode = number,
+            absoluteEpisode = number,
+            anilistId = anilistId,
+            malId = malId
+        )
+        newEpisode(payload.serialize()) {
+            this.name = "Épisode $number"
+            this.season = 1
+            this.episode = number
         }
     }
 
@@ -403,32 +435,70 @@ class FrUnifiedProvider : MainAPI() {
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
-    ): Boolean {
-        val payload = PlayPayload.parse(data) ?: return false
-        return SourceHub.aggregateLinks(payload, subtitleCallback, callback) > 0
+    ): Boolean = coroutineScope {
+        val payload = PlayPayload.parse(data) ?: return@coroutineScope false
+
+        val linkJobs = mutableListOf<Deferred<Boolean>>()
+        val sideJobs = mutableListOf<Deferred<Boolean>>()
+
+        // 1. Extensions FR installées (cochées dans les réglages)
+        linkJobs += async {
+            runCatching { SourceHub.aggregateLinks(payload, subtitleCallback, callback) > 0 }
+                .getOrDefault(false)
+        }
+
+        // 2. Addons Stremio configurés (Torrentio, Comet, debrid perso…)
+        if (FrSettings.useStremio) {
+            FrSettings.stremioUrls.forEach { addon ->
+                linkJobs += async {
+                    runCatching {
+                        withTimeoutOrNull(45_000L) { StremioClient.streams(addon, payload, callback) } ?: false
+                    }.getOrDefault(false)
+                }
+            }
+        }
+
+        // 3. Sous-titres externes (n'entrent pas dans le décompte des liens)
+        if (FrSettings.useSubtitles) {
+            (FrSettings.stremioUrls + FrSettings.DEFAULT_SUBTITLE_ADDON).distinct().forEach { addon ->
+                sideJobs += async {
+                    runCatching {
+                        withTimeoutOrNull(25_000L) { StremioClient.subtitles(addon, payload, subtitleCallback) } ?: false
+                    }.getOrDefault(false)
+                }
+            }
+        }
+
+        val hasLinks = linkJobs.awaitAll().any { it }
+        sideJobs.awaitAll()
+        hasLinks
     }
 
     // ------------------------------------------------------------------ utils
 
     private fun CatalogItem.toSearchResponse(): SearchResponse {
         val url = id.serialize()
-        return when {
-            id.kind == "anime" -> newAnimeSearchResponse(title, url, TvType.Anime, fix = false) {
-                this.posterUrl = this@toSearchResponse.posterUrl
-                this.year = this@toSearchResponse.year
-                this.score = Score.from10(this@toSearchResponse.rating10)
+        val poster = posterUrl
+        val itemYear = year
+        val rating = rating10
+
+        return when (id.kind) {
+            "anime" -> newAnimeSearchResponse(title, url, TvType.Anime, fix = false) {
+                this.posterUrl = poster
+                this.year = itemYear
+                safe { this.score = Score.from10(rating) }
             }
 
-            id.kind == "tv" -> newTvSeriesSearchResponse(title, url, TvType.TvSeries, fix = false) {
-                this.posterUrl = this@toSearchResponse.posterUrl
-                this.year = this@toSearchResponse.year
-                this.score = Score.from10(this@toSearchResponse.rating10)
+            "tv" -> newTvSeriesSearchResponse(title, url, TvType.TvSeries, fix = false) {
+                this.posterUrl = poster
+                this.year = itemYear
+                safe { this.score = Score.from10(rating) }
             }
 
             else -> newMovieSearchResponse(title, url, TvType.Movie, fix = false) {
-                this.posterUrl = this@toSearchResponse.posterUrl
-                this.year = this@toSearchResponse.year
-                this.score = Score.from10(this@toSearchResponse.rating10)
+                this.posterUrl = poster
+                this.year = itemYear
+                safe { this.score = Score.from10(rating) }
             }
         }
     }

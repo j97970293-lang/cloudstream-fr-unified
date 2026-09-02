@@ -42,6 +42,9 @@ FrUnified/src/main/kotlin/com/lagradost/frunified/
 ├── AniListCatalog.kt       → catalogue animés (AniList, GraphQL)
 ├── JikanCatalog.kt         → repli MyAnimeList (Jikan) si AniList est indisponible
 ├── SourceHub.kt            → moteur d'agrégation des extensions FR installées
+├── StremioClient.kt        → addons Stremio (liens + sous-titres)
+├── FrSettings.kt           → réglages persistés (sources actives, addons, langues)
+├── SettingsDialog.kt       → écran ⚙️ du plugin
 ├── TitleMatch.kt           → appariement tolérant des titres (VF/VOSTFR/HDLight/…)
 └── CatalogModels.kt        → identifiants du catalogue + charge utile de lecture
 ```
@@ -91,6 +94,24 @@ JDK 17 requis (AGP 8.7).
 
 Aucun scraping n'est dupliqué ici : quand French‑Stream change de miroir ou que Movix corrige
 son extracteur, **FR Unifié en profite automatiquement** puisqu'il réutilise ces extensions.
+
+## Réglages intégrés (⚙️ dans la liste des extensions)
+
+* **Activer / désactiver chaque serveur** : cases à cocher, une par extension FR détectée.
+* **Addons Stremio** : colle une URL par ligne (`https://torrentio.strem.fun/manifest.json`,
+  Comet, MediaFusion, un debrid perso…). Leurs flux HTTP et torrents (magnet) sont ajoutés
+  aux liens, à côté de ceux des extensions FR.
+* **Sous-titres externes** : activés par défaut via l'addon public OpenSubtitles v3
+  (aucune clé requise), filtrés par langue (`fre, fra, fr, eng` par défaut).
+* **Bandes-annonces** : jusqu'à 3 trailers YouTube par fiche, VF prioritaire (TMDB),
+  trailer MAL pour les animés.
+
+### Extensions basées sur TMDB/IMDb
+
+Les sources qui exposent `supportedSyncNames` (Frembed, Movix, et tout provider TMDB/IMDb)
+sont interrogées **directement par identifiant** (`getLoadUrl(SyncIdName.Imdb, "tt…")`),
+sans recherche textuelle : l'appariement est exact et instantané. Les autres passent par
+la recherche titre + année.
 
 ## Personnalisation
 
