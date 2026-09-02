@@ -50,7 +50,7 @@ FrUnified/src/main/kotlin/com/lagradost/frunified/
 
 1. Forkez / poussez ce dépôt sur GitHub, puis remplacez `USER` par votre pseudo :
    ```bash
-   grep -rl "USER/cloudstream-fr-unified" . | xargs sed -i "s|USER/cloudstream-fr-unified|VOTREPSEUDO/cloudstream-fr-unified|g"
+   grep -rl "j97970293-lang/cloudstream-fr-unified" . | xargs sed -i "s|j97970293-lang/cloudstream-fr-unified|VOTREPSEUDO/cloudstream-fr-unified|g"
    ```
 2. Poussez sur `master` : le workflow GitHub Actions compile et publie `FrUnified.cs3`
    et `plugins.json` sur la branche `builds`.

@@ -38,7 +38,7 @@ subprojects {
 
     cloudstream {
         // Remplacer par VOTRE dépôt une fois forké / poussé
-        setRepo(System.getenv("GITHUB_REPOSITORY") ?: "USER/cloudstream-fr-unified")
+        setRepo(System.getenv("GITHUB_REPOSITORY") ?: "j97970293-lang/cloudstream-fr-unified")
     }
 
     android {
