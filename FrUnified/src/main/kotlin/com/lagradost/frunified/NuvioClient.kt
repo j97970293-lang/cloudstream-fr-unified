@@ -205,6 +205,94 @@ object NuvioClient {
         }
     }
 
+    // ------------------------------------------- compatibilité Android (dex)
+
+    /** Dernier incident d'initialisation du moteur (visible dans les réglages). */
+    @Volatile
+    private var engineError: String? = null
+
+    /** Bandeau de diagnostic : « OK » ou la raison exacte du dernier échec. */
+    fun engineStatus(): String {
+        val err = engineError
+        if (err != null) return "✗ moteur : $err"
+        return runCatching {
+            val cx = RhinoContext.enter()
+            try {
+                cx.optimizationLevel = -1
+                cx.languageVersion = RhinoContext.VERSION_ES6
+                val scope = cx.initStandardObjects(com.frunified.rhino.TopLevel())
+                installRuntime(cx, scope)
+                val probe = cx.evaluateString(
+                    scope,
+                    "(typeof RegExp === 'function') && /^a(b+)c$/.test('abbbc') && " +
+                        "(function(){ try { null.x; return false; } catch (e) { return String(e).length > 0; } })()",
+                    "selftest", 1, null
+                )
+                val ok = RhinoContext.toBoolean(probe)
+                if (ok) "✓ moteur Rhino opérationnel (RegExp + messages)"
+                else "✗ auto-test JS négatif"
+            } finally {
+                RhinoContext.exit()
+            }
+        }.getOrElse { t -> "✗ moteur : " + (t.message?.take(120) ?: t::class.simpleName.orEmpty()) }
+    }
+
+    /**
+     * Rhino récupère deux choses par `ServiceLoader` / `ResourceBundle`, c'est-à-dire
+     * par des **fichiers de ressources** (`META-INF/services/com.frunified.rhino.RegExpLoader`
+     * et `com/frunified/rhino/resources/Messages.properties`). Un plugin CloudStream
+     * ne contient qu'un `classes.dex` : ces fichiers n'existent pas sur l'appareil.
+     *
+     * Conséquences avant ce correctif (invisibles sur JVM où le jar complet est au
+     * classpath, donc jamais détectées par les bancs d'essai) :
+     *  • aucun `RegExpLoader` → `RegExp` absent et **chaque littéral `/…/` fait
+     *    échouer la compilation** du script (`checkRegExpProxy`) ;
+     *  • aucun bundle de messages → l'erreur elle-même devient une
+     *    `MissingResourceException` (« ✗ interne: can't find bundle for base name … »),
+     *    ce qui masquait la vraie cause et tuait **tous** les scrapeurs.
+     *
+     * On rétablit les deux à la main : proxy + constructeur `RegExp` enregistrés
+     * dans le contexte, et bundle de messages fourni par une classe compilée
+     * (`com.frunified.rhino.resources.Messages`, déxée avec le plugin).
+     */
+    private fun installRuntime(cx: RhinoContext, scope: Scriptable) {
+        val scopeObj = scope as? com.frunified.rhino.ScriptableObject
+        if (scopeObj == null) {
+            engineError = "scope Rhino inattendu"
+            return
+        }
+        val proxyResult = runCatching {
+            com.frunified.rhino.ScriptRuntime.setRegExpProxy(
+                cx,
+                com.frunified.rhino.regexp.RegExpLoaderImpl().newProxy()
+            )
+        }
+        val registerResult = runCatching {
+            // registerRegExp(Context, ScriptableObject, boolean) est privé : on le
+            // retrouve par son nom (plus robuste qu'une signature exacte).
+            val register = com.frunified.rhino.ScriptRuntime::class.java.declaredMethods
+                .firstOrNull { it.name == "registerRegExp" }
+                ?: error("registerRegExp absent")
+            register.isAccessible = true
+            register.invoke(null, cx, scopeObj, false)
+        }
+        val messagesResult = runCatching {
+            java.util.ResourceBundle.getBundle(
+                "com.frunified.rhino.resources.Messages",
+                java.util.Locale.getDefault(),
+                com.frunified.rhino.ScriptRuntime::class.java.classLoader
+            ).getString("msg.dup.parms")
+        }
+        val failure = proxyResult.exceptionOrNull() ?: registerResult.exceptionOrNull()
+            ?: messagesResult.exceptionOrNull()
+        engineError = when {
+            failure == null -> null
+            proxyResult.isFailure -> "proxy RegExp : " + (failure.message?.take(90) ?: failure::class.simpleName.orEmpty())
+            registerResult.isFailure -> "constructeur RegExp : " + (failure.message?.take(90) ?: failure::class.simpleName.orEmpty())
+            else -> "messages Rhino : " + (failure.message?.take(90) ?: failure::class.simpleName.orEmpty())
+        }
+    }
+
     /** Exécute UN scrapeur dans un interpréteur Rhino isolé. */
     private suspend fun runScraper(
         scraper: NuvioScraper,
@@ -248,6 +336,9 @@ object NuvioClient {
             // et les bundles transpilés (babel) échouent en « Cannot find function apply ».
             val scope = cx.initStandardObjects(com.frunified.rhino.TopLevel())
             scopeRef = scope
+            // Le dex Android ne transporte ni META-INF/services ni .properties :
+            // sans cela RegExp et les messages Rhino sont introuvables (cf. installRuntime).
+            installRuntime(cx, scope)
             cx.evaluateString(scope, JS_ENV, "prelude", 1, null)
             injectEnv(scope)
 
@@ -705,7 +796,10 @@ object NuvioClient {
         private fun makeResponse(cx: RhinoContext, scope: Scriptable, status: Int, text: String): Any? =
             runCatching {
                 ScriptableObject.callMethod(scope, "__makeResponse", arrayOf<Any?>(status, text))
-            }.getOrNull() ?: Scriptable.NOT_FOUND
+            }.getOrNull()
+                // Undefined (et non Scriptable.NOT_FOUND, objet Java qui déclenche
+                // l'avertissement « missed Context.javaToJS() » à chaque test de vérité).
+                ?: com.frunified.rhino.Undefined.instance
     }
 
     private class B64Function(private val encode: Boolean) : BaseFunction() {
