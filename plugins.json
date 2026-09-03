@@ -1,10 +1,10 @@
 [
     {
-        "iconUrl": "https://www.google.com/s2/favicons?domain=themoviedb.org&sz=256",
-        "fileHash": "sha256-c5d22e51c552101540d20a8a73428d2f24976a3df851304db334b784b4bcc771",
+        "iconUrl": "https://raw.githubusercontent.com/j97970293-lang/cloudstream-fr-unified/master/icon.png",
+        "fileHash": "sha256-1025a3ae5f85022a6378c08ad40b911aa692883b69405034c0acf2eab5341574",
         "apiVersion": 1,
         "repositoryUrl": "https://github.com/j97970293-lang/cloudstream-fr-unified",
-        "fileSize": 830865,
+        "fileSize": 842124,
         "status": 1,
         "language": "fr",
         "authors": [
@@ -17,9 +17,9 @@
             "AnimeMovie",
             "Cartoon"
         ],
-        "version": 10,
+        "version": 11,
         "internalName": "FrUnified",
-        "description": "Catalogue unique FR (TMDB + AniList) : une seule extension qui agr\u00e8ge la recherche et les liens de toutes les extensions fran\u00e7aises install\u00e9es (French-Stream, Movix, Wiflix, FrenchAnime, Frembed, FSTV, Karma\u2026) et des scrapeurs Nuvio (Gowaru, z7kx, Phisher \u2014 engine Rhino patch\u00e9, serveurs VF/1080 prioritaires, limite par source, d\u00e9p\u00f4ts installables et r\u00e9glables \u2699\ufe0f). Addons Stremio (Torrentio, Comet, debrid), sous-titres et bandes-annonces.",
+        "description": "Catalogue unique FR (TMDB + AniList) : une seule extension qui agr\u00e8ge la recherche et les liens de toutes les extensions fran\u00e7aises install\u00e9es (French-Stream, Movix, Wiflix, FrenchAnime, Frembed, FSTV, Karma\u2026) et des scrapeurs Nuvio (Gowaru, z7kx, Phisher \u2014 engine Rhino patch\u00e9, RegExp et messages embarqu\u00e9s pour Android, serveurs VF/1080 prioritaires, limite par source, d\u00e9p\u00f4ts installables et r\u00e9glables \u2699\ufe0f). Addons Stremio (Torrentio, Comet, debrid), sous-titres et bandes-annonces.",
         "url": "https://raw.githubusercontent.com/j97970293-lang/cloudstream-fr-unified/builds/FrUnified.cs3",
         "name": "FrUnified"
     }
