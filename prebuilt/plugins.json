@@ -1,10 +1,10 @@
 [
     {
         "iconUrl": "https://www.google.com/s2/favicons?domain=themoviedb.org&sz=256",
-        "fileHash": "sha256-74128a640d90f8bcd7e89dc75c907742c256a81f1cb5c3f6cc589e1b80f74d66",
+        "fileHash": "sha256-96c940926460686f59199232fad812dd6812cb693a192412ae8202367f4d401b",
         "apiVersion": 1,
         "repositoryUrl": "https://github.com/j97970293-lang/cloudstream-fr-unified",
-        "fileSize": 879695,
+        "fileSize": 817182,
         "status": 1,
         "language": "fr",
         "authors": [
@@ -17,9 +17,9 @@
             "AnimeMovie",
             "Cartoon"
         ],
-        "version": 5,
+        "version": 6,
         "internalName": "FrUnified",
-        "description": "Catalogue unique FR (TMDB + AniList) : une seule extension qui agr\u00e8ge la recherche et les liens de toutes les extensions fran\u00e7aises install\u00e9es (French-Stream, Movix, Wiflix, FrenchAnime, Frembed, FSTV, Karma\u2026) et des scrapeurs Nuvio (Gowaru, z7kx, Phisher \u2014 engine Rhino patch\u00e9, serveurs VF/1080 prioritaires, limite par source, d\u00e9p\u00f4ts installables et r\u00e9glables \u2699\ufe0f). Addons Stremio (Torrentio, Comet, debrid), sous-titres et bandes-annonces.",
+        "description": "Catalogue unique FR (TMDB + AniList) : une seule extension qui agrège la recherche et les liens de toutes les extensions françaises installées (French-Stream, Movix, Wiflix, FrenchAnime, Frembed, FSTV, Karma…) et des scrapeurs Nuvio (Gowaru, z7kx, Phisher — engine Rhino patché, serveurs VF/1080 prioritaires, limite par source, dépôts installables et réglables ⚙️). Addons Stremio (Torrentio, Comet, debrid), sous-titres et bandes-annonces.",
         "url": "https://raw.githubusercontent.com/j97970293-lang/cloudstream-fr-unified/builds/FrUnified.cs3",
         "name": "FrUnified"
     }

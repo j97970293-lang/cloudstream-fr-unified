@@ -631,6 +631,18 @@ function clearInterval(id) {}
 function __drain() { while (__timers.length) { var t = __timers.shift(); try { t(); } catch (e) {} } }
 function __timerCount() { return __timers.length; }
 
+// ----- Polyfill du patch spread du moteur Rhino embarqué :
+// f(...a) -> f.apply(this, __spread(a)) ; [a, ...b] -> __spread([a], b)
+function __spread() {
+  var a = [];
+  for (var i = 0; i < arguments.length; i++) {
+    var v = arguments[i];
+    if (Array.isArray(v)) { for (var j = 0; j < v.length; j++) a.push(v[j]); }
+    else a.push(v);
+  }
+  return a;
+}
+
 // ----- Promise minimale (chaînes .then synchrones + helpers babel asyncToGenerator)
 function Promise(executor) {
   var self = this;

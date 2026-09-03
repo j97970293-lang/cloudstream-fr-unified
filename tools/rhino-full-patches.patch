@@ -1,0 +1,989 @@
+diff --git a/gradle.properties b/gradle.properties
+index 6e76e30..c127938 100644
+--- a/gradle.properties
++++ b/gradle.properties
+@@ -4,7 +4,7 @@ version=1.9.1
+ mavenReleaseRepo=https://oss.sonatype.org/service/local/staging/deploy/maven2/
+ mavenSnapshotRepo=https://oss.sonatype.org/content/repositories/snapshots
+ githubPackagesRepo=https://maven.pkg.github.com/mozilla/rhino
+-org.gradle.caching=true
++org.gradle.caching=false
+ org.gradle.parallel=true
+-org.gradle.configuration-cache=true
++org.gradle.configuration-cache=false
+ android.useAndroidX=true
+diff --git a/rhino/src/main/java/org/mozilla/javascript/CodeGenerator.java b/rhino/src/main/java/org/mozilla/javascript/CodeGenerator.java
+index a9d91b8..7ac44b5 100644
+--- a/rhino/src/main/java/org/mozilla/javascript/CodeGenerator.java
++++ b/rhino/src/main/java/org/mozilla/javascript/CodeGenerator.java
+@@ -12,6 +12,7 @@ import java.util.Arrays;
+ import java.util.HashMap;
+ import java.util.List;
+ import java.util.Map;
++import org.mozilla.javascript.ast.Name;
+ import org.mozilla.javascript.ast.FunctionNode;
+ import org.mozilla.javascript.ast.Jump;
+ import org.mozilla.javascript.ast.ScriptNode;
+@@ -1202,6 +1203,7 @@ class CodeGenerator<T extends ScriptOrFn<T>> extends Icode {
+         stackChange(-1);
+     }
+ 
++
+     private CompleteOptionalCallJump generateCallFunAndThis(
+             Node left, boolean isOptionalChainingCall) {
+         // Generate code to place on stack function and thisObj
+diff --git a/rhino/src/main/java/org/mozilla/javascript/InterpreterData.java b/rhino/src/main/java/org/mozilla/javascript/InterpreterData.java
+index 6d7ef5d..7084c5b 100644
+--- a/rhino/src/main/java/org/mozilla/javascript/InterpreterData.java
++++ b/rhino/src/main/java/org/mozilla/javascript/InterpreterData.java
+@@ -151,7 +151,7 @@ final class InterpreterData<T extends ScriptOrFn<T>> extends JSCode<T> implement
+         @Override
+         public JSCode<T> build() {
+             if (built == null) {
+-                var jumpMap = longJumps != null ? Map.copyOf(longJumps) : null;
++                var jumpMap = longJumps != null ? org.mozilla.javascript.J8Compat.copyOf(longJumps) : null;
+                 built =
+                         new InterpreterData<T>(
+                                 itsStringTable,
+diff --git a/rhino/src/main/java/org/mozilla/javascript/J8Compat.java b/rhino/src/main/java/org/mozilla/javascript/J8Compat.java
+new file mode 100644
+index 0000000..246aab2
+--- /dev/null
++++ b/rhino/src/main/java/org/mozilla/javascript/J8Compat.java
+@@ -0,0 +1,95 @@
++package org.mozilla.javascript;
++
++import java.io.IOException;
++import java.io.InputStream;
++import java.util.Collections;
++import java.util.LinkedHashMap;
++import java.util.List;
++import java.util.Map;
++import java.util.Objects;
++import java.util.Set;
++
++/**
++ * Équivalents Java 8 des API Java 9+ utilisées par Rhino 1.9.1
++ * (indisponibles sur Android avant API 30).
++ */
++public final class J8Compat {
++    private J8Compat() {}
++
++    public static <K, V> Map.Entry<K, V> entry(K k, V v) {
++        return new java.util.AbstractMap.SimpleImmutableEntry<>(k, v);
++    }
++
++    @SafeVarargs
++    public static <K, V> Map<K, V> mapOfEntries(Map.Entry<? extends K, ? extends V>... entries) {
++        Map<K, V> m = new LinkedHashMap<>();
++        for (Map.Entry<? extends K, ? extends V> e : entries) m.put(e.getKey(), e.getValue());
++        return Collections.unmodifiableMap(m);
++    }
++
++    public static <K, V> Map<K, V> mapOf() {
++        return Collections.emptyMap();
++    }
++
++    public static <K, V> Map<K, V> mapOf(Object... kv) {
++        Map<K, V> m = new LinkedHashMap<>();
++        for (int i = 0; i + 1 < kv.length; i += 2) {
++            @SuppressWarnings("unchecked")
++            K k = (K) kv[i];
++            @SuppressWarnings("unchecked")
++            V v = (V) kv[i + 1];
++            m.put(k, v);
++        }
++        return Collections.unmodifiableMap(m);
++    }
++
++    public static <E> List<E> listOf() {
++        return Collections.emptyList();
++    }
++
++    public static <E> Set<E> setOf() {
++        return Collections.emptySet();
++    }
++
++    @SafeVarargs
++    public static <E> List<E> listOf(E... items) {
++        List<E> l = new java.util.ArrayList<>(items.length);
++        Collections.addAll(l, items);
++        return Collections.unmodifiableList(l);
++    }
++
++    @SafeVarargs
++    public static <E> Set<E> setOf(E... items) {
++        Set<E> s = new java.util.LinkedHashSet<>();
++        Collections.addAll(s, items);
++        return Collections.unmodifiableSet(s);
++    }
++
++    public static <K, V> Map<K, V> copyOf(Map<K, V> m) {
++        return Collections.unmodifiableMap(new LinkedHashMap<>(m));
++    }
++
++    public static <E> List<E> copyOf(List<E> l) {
++        return Collections.unmodifiableList(new java.util.ArrayList<>(l));
++    }
++
++    public static <E> Set<E> copyOf(Set<E> s) {
++        return Collections.unmodifiableSet(new java.util.LinkedHashSet<>(s));
++    }
++
++    public static byte[] readAllBytes(InputStream in) throws IOException {
++        java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
++        byte[] chunk = new byte[8192];
++        int n;
++        while ((n = in.read(chunk)) != -1) buf.write(chunk, 0, n);
++        return buf.toByteArray();
++    }
++
++    public static <T> T requireNonNullElse(T obj, T def) {
++        return obj != null ? obj : Objects.requireNonNull(def);
++    }
++
++    public static <T> T requireNonNullElseGet(T obj, java.util.function.Supplier<T> sup) {
++        return obj != null ? obj : Objects.requireNonNull(sup.get());
++    }
++}
+diff --git a/rhino/src/main/java/org/mozilla/javascript/NativeCollectionIterator.java b/rhino/src/main/java/org/mozilla/javascript/NativeCollectionIterator.java
+index a4f6b6f..947488c 100644
+--- a/rhino/src/main/java/org/mozilla/javascript/NativeCollectionIterator.java
++++ b/rhino/src/main/java/org/mozilla/javascript/NativeCollectionIterator.java
+@@ -10,7 +10,7 @@ public class NativeCollectionIterator extends ES6Iterator {
+     private static final long serialVersionUID = 7094840979404373443L;
+     private String className;
+     private Type type;
+-    private transient Iterator<Hashtable.Entry> iterator = Collections.emptyIterator();
++    private transient Iterator<Hashtable.Entry> iterator = Collections.<Hashtable.Entry>emptyList().iterator();
+ 
+     enum Type {
+         KEYS,
+@@ -24,7 +24,7 @@ public class NativeCollectionIterator extends ES6Iterator {
+ 
+     public NativeCollectionIterator(String tag) {
+         this.className = tag;
+-        this.iterator = Collections.emptyIterator();
++        this.iterator = Collections.<Hashtable.Entry>emptyList().iterator();
+         this.type = Type.BOTH;
+     }
+ 
+@@ -65,7 +65,7 @@ public class NativeCollectionIterator extends ES6Iterator {
+         stream.defaultReadObject();
+         className = (String) stream.readObject();
+         type = (Type) stream.readObject();
+-        iterator = Collections.emptyIterator();
++        iterator = Collections.<Hashtable.Entry>emptyList().iterator();
+     }
+ 
+     private void writeObject(ObjectOutputStream stream) throws IOException {
+diff --git a/rhino/src/main/java/org/mozilla/javascript/NativeJavaClass.java b/rhino/src/main/java/org/mozilla/javascript/NativeJavaClass.java
+index 4b85a84..7a8b402 100644
+--- a/rhino/src/main/java/org/mozilla/javascript/NativeJavaClass.java
++++ b/rhino/src/main/java/org/mozilla/javascript/NativeJavaClass.java
+@@ -189,7 +189,7 @@ public class NativeJavaClass extends NativeJavaObject implements Function {
+     }
+ 
+     static Object constructInternal(Object[] args, MemberBox ctor) {
+-        args = ctor.wrapArgsInternal(args, Map.of());
++        args = ctor.wrapArgsInternal(args, org.mozilla.javascript.J8Compat.mapOf());
+ 
+         return ctor.newInstance(args);
+     }
+diff --git a/rhino/src/main/java/org/mozilla/javascript/NativeJavaMethod.java b/rhino/src/main/java/org/mozilla/javascript/NativeJavaMethod.java
+index a0bf123..35a9552 100644
+--- a/rhino/src/main/java/org/mozilla/javascript/NativeJavaMethod.java
++++ b/rhino/src/main/java/org/mozilla/javascript/NativeJavaMethod.java
+@@ -141,7 +141,7 @@ public class NativeJavaMethod extends BaseFunction {
+ 
+         MemberBox meth = methods[index];
+ 
+-        Map<VariableTypeInfo, TypeInfo> mapping = Map.of();
++        Map<VariableTypeInfo, TypeInfo> mapping = org.mozilla.javascript.J8Compat.mapOf();
+         if (thisObj instanceof NativeJavaObject) {
+             var staticType = ((NativeJavaObject) thisObj).staticType;
+             if (staticType instanceof ParameterizedTypeInfo) {
+diff --git a/rhino/src/main/java/org/mozilla/javascript/NativeString.java b/rhino/src/main/java/org/mozilla/javascript/NativeString.java
+index 9727165..cd5ec9c 100644
+--- a/rhino/src/main/java/org/mozilla/javascript/NativeString.java
++++ b/rhino/src/main/java/org/mozilla/javascript/NativeString.java
+@@ -918,7 +918,7 @@ final class NativeString extends ScriptableObject {
+                     AbstractEcmaStringOperations.buildReplacementList(
+                             ScriptRuntime.toString(replaceValue));
+         } else {
+-            replaceOps = List.of();
++            replaceOps = org.mozilla.javascript.J8Compat.listOf();
+         }
+         int searchLength = searchString.length();
+         int position = string.indexOf(searchString);
+@@ -944,7 +944,7 @@ final class NativeString extends ScriptableObject {
+                                     });
+             replacement = ScriptRuntime.toString(replacementObj);
+         } else {
+-            List<Object> captures = List.of();
++            List<Object> captures = org.mozilla.javascript.J8Compat.listOf();
+             replacement =
+                     AbstractEcmaStringOperations.getSubstitution(
+                             cx,
+@@ -1005,7 +1005,7 @@ final class NativeString extends ScriptableObject {
+                     AbstractEcmaStringOperations.buildReplacementList(
+                             ScriptRuntime.toString(replaceValue));
+         } else {
+-            replaceOps = List.of();
++            replaceOps = org.mozilla.javascript.J8Compat.listOf();
+         }
+         int searchLength = searchString.length();
+         int advanceBy = Math.max(1, searchLength);
+@@ -1041,7 +1041,7 @@ final class NativeString extends ScriptableObject {
+                                         });
+                 replacement = ScriptRuntime.toString(replacementObj);
+             } else {
+-                List<Object> captures = List.of();
++                List<Object> captures = org.mozilla.javascript.J8Compat.listOf();
+                 replacement =
+                         AbstractEcmaStringOperations.getSubstitution(
+                                 cx,
+diff --git a/rhino/src/main/java/org/mozilla/javascript/Parser.java b/rhino/src/main/java/org/mozilla/javascript/Parser.java
+index de1de39..2de4e9b 100644
+--- a/rhino/src/main/java/org/mozilla/javascript/Parser.java
++++ b/rhino/src/main/java/org/mozilla/javascript/Parser.java
+@@ -9,6 +9,7 @@ package org.mozilla.javascript;
+ import java.io.IOException;
+ import java.io.Reader;
+ import java.util.ArrayList;
++import java.util.Arrays;
+ import java.util.HashMap;
+ import java.util.HashSet;
+ import java.util.List;
+@@ -1364,9 +1365,10 @@ public class Parser {
+                 return pn;
+ 
+             case Token.RETURN:
+-            case Token.YIELD:
+                 pn = returnOrYield(tt, false);
+                 break;
++            // PATCH Nuvio : « yield » au niveau instruction est une ExpressionStatement
++            // ((yield a), b) conforme ES6 — on le laisse tomber sur le cas par défaut.
+ 
+             case Token.DEBUGGER:
+                 consumeToken();
+@@ -2152,7 +2154,10 @@ public class Parser {
+                 }
+             // fallthrough
+             default:
+-                e = expr(false);
++                // PATCH Nuvio : l'opérande de « yield » est une AssignmentExpression
++                // (jamais une Expression avec virgule). Sans ce patch,
++                // « let b = yield X, c = Y » est parsé « yield (X, c = Y) ».
++                e = tt == Token.YIELD ? assignExpr() : expr(false);
+                 end = getNodeEnd(e);
+         }
+ 
+@@ -2530,7 +2535,8 @@ public class Parser {
+             int opPos = ts.tokenBeg;
+             if (compilerEnv.isStrictMode() && !pn.hasSideEffects())
+                 addStrictWarning("msg.no.side.effects", "", pos, nodeEnd(pn) - pos);
+-            if (peekToken() == Token.YIELD) reportError("msg.yield.parenthesized");
++            // PATCH Nuvio : yield est autorisé en position d'argument/comma
++            // (JSON.parse(yield x) est valide ES6 ; Rhino exigeait des parenthèses)
+             if (allowTrailingComma && peekToken() == Token.RP) {
+                 pn.putIntProp(Node.TRAILING_COMMA, 1);
+                 return pn;
+@@ -2941,18 +2947,26 @@ public class Parser {
+                     // Quick fix to handle scenario like f1(a,); but not f1(a,b
+                     break;
+                 }
+-                if (peekToken() == Token.YIELD) {
+-                    reportError("msg.yield.parenthesized");
+-                }
+-                AstNode en = assignExpr();
+-                if (peekToken() == Token.FOR) {
+-                    try {
+-                        result.add(generatorExpression(en, 0, true));
+-                    } catch (IOException ex) {
+-                        // #TODO
+-                    }
++                // PATCH Nuvio : spread en argument d'appel — f(a, ...b, c)
++                if (peekToken() == Token.DOTDOTDOT) {
++                    int spreadPos = ts.tokenBeg;
++                    consumeToken();
++                    AstNode spreadExpr = assignExpr();
++                    Spread spread = new Spread(spreadPos, ts.tokenEnd - spreadPos);
++                    spread.setExpression(spreadExpr);
++                    result.add(spread);
+                 } else {
+-                    result.add(en);
++                    // PATCH Nuvio : yield autorisé en argument (JSON.parse(yield x)…)
++                    AstNode en = assignExpr();
++                    if (peekToken() == Token.FOR) {
++                        try {
++                            result.add(generatorExpression(en, 0, true));
++                        } catch (IOException ex) {
++                            // #TODO
++                        }
++                    } else {
++                        result.add(en);
++                    }
+                 }
+             } while (matchToken(Token.COMMA, true));
+         } finally {
+@@ -3099,13 +3113,162 @@ public class Parser {
+         f.setLp(ts.tokenBeg - pos);
+         List<AstNode> args = argumentList();
+         if (args != null && args.size() > ARGC_LIMIT) reportError("msg.too.many.function.args");
+-        f.setArguments(args);
+-        f.setRp(ts.tokenBeg - pos);
+-        f.setLength(ts.tokenEnd - pos);
++        FunctionCall result = f;
++        if (args != null) {
++            boolean hasSpread = false;
++            for (AstNode arg : args) {
++                if (arg instanceof Spread) {
++                    hasSpread = true;
++                    break;
++                }
++            }
++            if (hasSpread) {
++                result = spreadApplyCall(f, pn, args);
++            } else {
++                result.setArguments(args);
++            }
++        }
++        result.setRp(ts.tokenBeg - pos);
++        result.setLength(ts.tokenEnd - pos);
+         if (isOptionalChain) {
+-            f.markIsOptionalCall();
++            result.markIsOptionalCall();
++        }
++        return result;
++    }
++
++    /**
++     * PATCH Nuvio : le parseur Rhino 1.9.1 ne supporte pas le spread en argument
++     * d'appel (f(...a)) mais les bundles Nuvio (webpack) l'utilisent massivement
++     * (push(...x), Math.max(...a.map(...)), …). On réécrit l'appel en
++     * « f.apply(thiz, __spread([a], b, [c])) » — expressions 100 % standard,
++     * interprétées nativement ; __spread est fourni par le préambule JS.
++     */
++    /**
++     * Spread patch : duplique une expression AST pour éviter qu'un même nœud
++     * apparaisse à deux endroits de l'arbre (le champ « next » des siblings est
++     * partagé et le transform IR corrompt alors le chaînage, cf. s.push(...x)).
++     */
++    private static AstNode cloneExpr(AstNode n) {
++        if (n == null) return null;
++        switch (n.getType()) {
++            case Token.NAME:
++                Name nm = (Name) n;
++                return new Name(nm.getPosition(), nm.getLength(), nm.getIdentifier());
++            case Token.THIS:
++                return new KeywordLiteral(n.getPosition(), n.getLength(), Token.THIS);
++            case Token.STRING: {
++                StringLiteral sl = (StringLiteral) n;
++                StringLiteral sr = new StringLiteral(sl.getPosition(), sl.getLength());
++                sr.setValue(sl.getValue());
++                return sr;
++            }
++            case Token.NUMBER: {
++                NumberLiteral nl = (NumberLiteral) n;
++                NumberLiteral r = new NumberLiteral(nl.getPosition(), nl.getLength());
++                r.setNumber(nl.getNumber());
++                return r;
++            }
++            case Token.NULL:
++                return new KeywordLiteral(n.getPosition(), n.getLength(), Token.NULL);
++            case Token.TRUE:
++            case Token.FALSE:
++                return new KeywordLiteral(n.getPosition(), n.getLength(), n.getType());
++            case Token.REGEXP: {
++                RegExpLiteral rl = (RegExpLiteral) n;
++                RegExpLiteral rr = new RegExpLiteral(rl.getPosition(), rl.getLength());
++                rr.setValue(rl.getValue());
++                rr.setFlags(rl.getFlags());
++                return rr;
++            }
++            case Token.GETPROP: {
++                PropertyGet pg = (PropertyGet) n;
++                return new PropertyGet(pg.getPosition(), pg.getLength(),
++                        cloneExpr(pg.getTarget()), (Name) cloneExpr(pg.getProperty()));
++            }
++            case Token.GETELEM: {
++                ElementGet eg = (ElementGet) n;
++                return new ElementGet(cloneExpr(eg.getTarget()), cloneExpr(eg.getElement()));
++            }
++            case Token.CALL: {
++                FunctionCall fc = (FunctionCall) n;
++                FunctionCall cr = new FunctionCall(fc.getPosition());
++                cr.setTarget(cloneExpr(fc.getTarget()));
++                List<AstNode> cargs = new ArrayList<>();
++                for (AstNode a : fc.getArguments()) cargs.add(cloneExpr(a));
++                cr.setArguments(cargs);
++                return cr;
++            }
++            case Token.LP: {
++                ParenthesizedExpression pe = (ParenthesizedExpression) n;
++                return new ParenthesizedExpression(pe.getPosition(), pe.getLength(),
++                        cloneExpr(pe.getExpression()));
++            }
++            case Token.ARRAYLIT: {
++                ArrayLiteral al = (ArrayLiteral) n;
++                ArrayLiteral r = new ArrayLiteral(al.getPosition(), al.getLength());
++                for (AstNode el : al.getElements()) r.addElement(cloneExpr(el));
++                return r;
++            }
++            case Token.HOOK: {
++                ConditionalExpression ce = (ConditionalExpression) n;
++                ConditionalExpression cr = new ConditionalExpression(ce.getPosition(), ce.getLength());
++                cr.setTestExpression(cloneExpr(ce.getTestExpression()));
++                cr.setTrueExpression(cloneExpr(ce.getTrueExpression()));
++                cr.setFalseExpression(cloneExpr(ce.getFalseExpression()));
++                return cr;
++            }
++            default:
++                if (n instanceof UnaryExpression) {
++                    UnaryExpression ue = (UnaryExpression) n;
++                    return new UnaryExpression(ue.getOperator(), ue.getPosition(),
++                            cloneExpr(ue.getOperand()));
++                }
++                throw new RuntimeException("cloneExpr: unsupported type " + n.getType()
++                        + " (" + n.getClass().getName() + ") " + n.toSource());
+         }
+-        return f;
++    }
++
++    private FunctionCall spreadApplyCall(FunctionCall orig, AstNode pn, List<AstNode> args) {
++        int pos = orig.getPosition();
++        AstNode thiz;
++        if (pn instanceof PropertyGet) {
++            thiz = cloneExpr(((PropertyGet) pn).getTarget());
++        } else {
++            thiz = new UnaryExpression(Token.VOID, pos, new NumberLiteral(pos, "0"));
++        }
++        PropertyGet applyGet = new PropertyGet(pos, orig.getLength(), pn,
++                new Name(pos, 5, "apply"));
++        List<AstNode> callArgs = new ArrayList<>();
++        List<AstNode> group = null;
++        for (AstNode arg : args) {
++            if (arg instanceof Spread) {
++                if (group != null) {
++                    callArgs.add(arrayLiteralOf(group, pos));
++                    group = null;
++                }
++                callArgs.add(((Spread) arg).getExpression());
++            } else {
++                if (group == null) group = new ArrayList<>();
++                group.add(arg);
++            }
++        }
++        if (group != null) callArgs.add(arrayLiteralOf(group, pos));
++        FunctionCall spreadCall = new FunctionCall(pos);
++        spreadCall.setTarget(new Name(pos, 8, "__spread"));
++        spreadCall.setArguments(callArgs);
++        FunctionCall result = new FunctionCall(pos);
++        result.setTarget(applyGet);
++        result.setArguments(Arrays.asList(thiz, spreadCall));
++        result.setLp(orig.getLp());
++        result.setRp(orig.getRp());
++        result.setLength(orig.getLength());
++        return result;
++    }
++
++    private ArrayLiteral arrayLiteralOf(List<AstNode> elements, int pos) {
++        ArrayLiteral al = new ArrayLiteral(pos, 2);
++        al.setElements(elements);
++        return al;
+     }
+ 
+     private AstNode taggedTemplateLiteral(AstNode pn) throws IOException {
+@@ -3666,6 +3829,39 @@ public class Parser {
+         }
+         pn.setLength(end - pos);
+         pn.setLineColumnNumber(lineno, column);
++        // PATCH Nuvio : [...x] et [a, ...b] -> __spread([a], b). Le codegen de
++        // Rhino 1.9.1 ne sait pas coder les nœuds Spread (badTree DOTDOTDOT) ;
++        // __spread est fourni par le préambule de NuvioClient et concatène ses
++        // arguments (tableaux aplatis, valeurs simples ajoutées telles quelles).
++        boolean hasSpread = false;
++        for (AstNode e : elements) {
++            if (e instanceof Spread) {
++                hasSpread = true;
++                break;
++            }
++        }
++        if (hasSpread) {
++            List<AstNode> group = null;
++            List<AstNode> callArgs = new ArrayList<>();
++            for (AstNode e : elements) {
++                if (e instanceof Spread) {
++                    if (group != null) {
++                        callArgs.add(arrayLiteralOf(group, pos));
++                        group = null;
++                    }
++                    callArgs.add(((Spread) e).getExpression());
++                } else {
++                    if (group == null) group = new ArrayList<>();
++                    group.add(e);
++                }
++            }
++            if (group != null) callArgs.add(arrayLiteralOf(group, pos));
++            FunctionCall spreadCall = new FunctionCall(pos);
++            spreadCall.setTarget(new Name(pos, 8, "__spread"));
++            spreadCall.setArguments(callArgs);
++            spreadCall.setLength(end - pos);
++            return spreadCall;
++        }
+         return pn;
+     }
+ 
+diff --git a/rhino/src/main/java/org/mozilla/javascript/SlotMapOwner.java b/rhino/src/main/java/org/mozilla/javascript/SlotMapOwner.java
+index aebb932..092ae70 100644
+--- a/rhino/src/main/java/org/mozilla/javascript/SlotMapOwner.java
++++ b/rhino/src/main/java/org/mozilla/javascript/SlotMapOwner.java
+@@ -1,7 +1,5 @@
+ package org.mozilla.javascript;
+ 
+-import java.lang.invoke.MethodHandles;
+-import java.lang.invoke.VarHandle;
+ import java.util.Collections;
+ import java.util.Iterator;
+ import java.util.NoSuchElementException;
+@@ -21,24 +19,21 @@ public abstract class SlotMapOwner {
+ 
+     static final SlotMap THREAD_SAFE_EMPTY_SLOT_MAP = new ThreadSafeEmptySlotMap();
+ 
+-    @SuppressWarnings("AndroidJdkLibsChecker")
+-    // https://developer.android.com/reference/java/lang/invoke/VarHandle added in API level 33
+-    // Note: Due presence of this class, dexing of rhino will not be possible for APIs < 26
++    // Patch local (FR-Unified) : VarHandle/MethodHandles (Java 9+) ne sont pas
++    // déxables pour un minSdk < 26 sous D8. On remplace par un échange sous
++    // verrou, sémantiquement identique à compareAndExchange (retourne la valeur
++    // effectivement présente : oldMap si l'échange a eu lieu, sinon la valeur
++    // concurrente).
+     static final class ThreadedAccess {
+ 
+-        private static final VarHandle SLOT_MAP = getSlotMapHandle();
+-
+-        private static VarHandle getSlotMapHandle() {
+-            try {
+-                return MethodHandles.lookup()
+-                        .findVarHandle(SlotMapOwner.class, "slotMap", SlotMap.class);
+-            } catch (NoSuchFieldException | IllegalAccessException e) {
+-                throw new Error(e);
+-            }
+-        }
+-
+         static SlotMap checkAndReplaceMap(SlotMapOwner owner, SlotMap oldMap, SlotMap newMap) {
+-            return (SlotMap) SLOT_MAP.compareAndExchange(owner, oldMap, newMap);
++            synchronized (owner) {
++                if (owner.slotMap == oldMap) {
++                    owner.slotMap = newMap;
++                    return oldMap;
++                }
++                return owner.slotMap;
++            }
+         }
+     }
+ 
+@@ -46,7 +41,7 @@ public abstract class SlotMapOwner {
+ 
+         @Override
+         public Iterator<Slot> iterator() {
+-            return Collections.emptyIterator();
++            return Collections.<Slot>emptyList().iterator();
+         }
+ 
+         @Override
+diff --git a/rhino/src/main/java/org/mozilla/javascript/lc/type/ParameterizedTypeInfo.java b/rhino/src/main/java/org/mozilla/javascript/lc/type/ParameterizedTypeInfo.java
+index b4d1cf4..10a7d2a 100644
+--- a/rhino/src/main/java/org/mozilla/javascript/lc/type/ParameterizedTypeInfo.java
++++ b/rhino/src/main/java/org/mozilla/javascript/lc/type/ParameterizedTypeInfo.java
+@@ -62,11 +62,11 @@ public interface ParameterizedTypeInfo extends TypeInfo {
+             ownerTypeMapping =
+                     ((ParameterizedTypeInfo) ownerType).extractConsolidationMapping(factory);
+         } else {
+-            ownerTypeMapping = Map.of();
++            ownerTypeMapping = org.mozilla.javascript.J8Compat.mapOf();
+         }
+ 
+         if (len == 1 && ownerTypeMapping.isEmpty()) {
+-            return Map.of((VariableTypeInfo) factory.create(typeVariables[0]), actualParams.get(0));
++            return org.mozilla.javascript.J8Compat.mapOf((VariableTypeInfo) factory.create(typeVariables[0]), actualParams.get(0));
+         }
+ 
+         var mapping = new HashMap<VariableTypeInfo, TypeInfo>();
+diff --git a/rhino/src/main/java/org/mozilla/javascript/lc/type/TypeInfo.java b/rhino/src/main/java/org/mozilla/javascript/lc/type/TypeInfo.java
+index 9ca3fdd..2239b1c 100644
+--- a/rhino/src/main/java/org/mozilla/javascript/lc/type/TypeInfo.java
++++ b/rhino/src/main/java/org/mozilla/javascript/lc/type/TypeInfo.java
+@@ -183,7 +183,7 @@ public interface TypeInfo {
+      * @see Class#getEnumConstants()
+      */
+     default List<Object> enumConstants() {
+-        return List.of();
++        return org.mozilla.javascript.J8Compat.listOf();
+     }
+ 
+     default Object createDefaultValue() {
+diff --git a/rhino/src/main/java/org/mozilla/javascript/lc/type/TypeInfoFactory.java b/rhino/src/main/java/org/mozilla/javascript/lc/type/TypeInfoFactory.java
+index eb53e0e..3b0b037 100644
+--- a/rhino/src/main/java/org/mozilla/javascript/lc/type/TypeInfoFactory.java
++++ b/rhino/src/main/java/org/mozilla/javascript/lc/type/TypeInfoFactory.java
+@@ -123,7 +123,7 @@ public interface TypeInfoFactory extends Serializable {
+      * @see TypeInfo#consolidate(Map)
+      */
+     default Map<VariableTypeInfo, TypeInfo> getConsolidationMapping(Class<?> from) {
+-        return Map.of();
++        return org.mozilla.javascript.J8Compat.mapOf();
+     }
+ 
+     /// helpers
+@@ -166,13 +166,13 @@ public interface TypeInfoFactory extends Serializable {
+         var size = types.size();
+ 
+         if (size == 0) {
+-            return List.of();
++            return org.mozilla.javascript.J8Compat.listOf();
+         }
+ 
+         if (size == 1) {
+             var type = types.get(0);
+             var consolidated = type.consolidate(mapping);
+-            return type == consolidated ? types : List.of(consolidated);
++            return type == consolidated ? types : org.mozilla.javascript.J8Compat.listOf(consolidated);
+         }
+ 
+         var consolidatedTypes = new ArrayList<TypeInfo>(types.size());
+@@ -191,10 +191,10 @@ public interface TypeInfoFactory extends Serializable {
+     static Map<VariableTypeInfo, TypeInfo> transformMapping(
+             Map<VariableTypeInfo, TypeInfo> mapping, Map<VariableTypeInfo, TypeInfo> transformer) {
+         if (mapping.isEmpty()) {
+-            return Map.of();
++            return org.mozilla.javascript.J8Compat.mapOf();
+         } else if (mapping.size() == 1) {
+             var entry = mapping.entrySet().iterator().next();
+-            return Map.of(entry.getKey(), entry.getValue().consolidate(transformer));
++            return org.mozilla.javascript.J8Compat.mapOf(entry.getKey(), entry.getValue().consolidate(transformer));
+         }
+         var transformed = new HashMap<>(mapping);
+         for (var entry : transformed.entrySet()) {
+@@ -246,13 +246,13 @@ public interface TypeInfoFactory extends Serializable {
+     default <T extends Type> List<TypeInfo> createList(T[] types) {
+         switch (types.length) {
+             case 0:
+-                return List.of();
++                return org.mozilla.javascript.J8Compat.listOf();
+             case 1:
+-                return List.of(create(types[0]));
++                return org.mozilla.javascript.J8Compat.listOf(create(types[0]));
+             case 2:
+-                return List.of(create(types[0]), create(types[1]));
++                return org.mozilla.javascript.J8Compat.listOf(create(types[0]), create(types[1]));
+             default:
+-                // List.of(createArray(types)) will cause one more array copying
++                // org.mozilla.javascript.J8Compat.listOf(createArray(types)) will cause one more array copying
+                 return Collections.unmodifiableList(Arrays.asList(createArray(types)));
+         }
+     }
+diff --git a/rhino/src/main/java/org/mozilla/javascript/lc/type/impl/EnumTypeInfo.java b/rhino/src/main/java/org/mozilla/javascript/lc/type/impl/EnumTypeInfo.java
+index 07c2d6f..78d19b3 100644
+--- a/rhino/src/main/java/org/mozilla/javascript/lc/type/impl/EnumTypeInfo.java
++++ b/rhino/src/main/java/org/mozilla/javascript/lc/type/impl/EnumTypeInfo.java
+@@ -22,7 +22,7 @@ public class EnumTypeInfo extends ClassTypeInfo {
+     @Override
+     public List<Object> enumConstants() {
+         if (constants == null) {
+-            constants = List.of(asClass().getEnumConstants());
++            constants = org.mozilla.javascript.J8Compat.listOf(asClass().getEnumConstants());
+         }
+ 
+         return constants;
+diff --git a/rhino/src/main/java/org/mozilla/javascript/lc/type/impl/factory/FactoryBase.java b/rhino/src/main/java/org/mozilla/javascript/lc/type/impl/factory/FactoryBase.java
+index 4a0cb11..6fdb70b 100644
+--- a/rhino/src/main/java/org/mozilla/javascript/lc/type/impl/factory/FactoryBase.java
++++ b/rhino/src/main/java/org/mozilla/javascript/lc/type/impl/factory/FactoryBase.java
+@@ -86,7 +86,7 @@ public interface FactoryBase extends TypeInfoFactory {
+         }
+ 
+         if (superMapping.isEmpty() && interfaceMappings.stream().allMatch(Map::isEmpty)) {
+-            return Map.copyOf(mapping);
++            return org.mozilla.javascript.J8Compat.copyOf(mapping);
+         }
+ 
+         // transform super mapping to make it able to directly map a type to types used by E.class,
+@@ -102,7 +102,7 @@ public interface FactoryBase extends TypeInfoFactory {
+         // Result: `Ta -> Te`, `Tb -> Te`, `Tc -> String`, `Td -> String`
+         // This means that all type variables from superclass / interface (Ta, Tb, Tc, Td) can be
+         // eliminated by applying the mapping ONCE, which will be important for performance
+-        return Map.copyOf(merged);
++        return org.mozilla.javascript.J8Compat.copyOf(merged);
+     }
+ 
+     private void extractSuperMapping(Type superType, Map<VariableTypeInfo, TypeInfo> pushTo) {
+diff --git a/rhino/src/main/java/org/mozilla/javascript/lc/type/impl/factory/WithCacheFactory.java b/rhino/src/main/java/org/mozilla/javascript/lc/type/impl/factory/WithCacheFactory.java
+index 4d4515e..76318a8 100644
+--- a/rhino/src/main/java/org/mozilla/javascript/lc/type/impl/factory/WithCacheFactory.java
++++ b/rhino/src/main/java/org/mozilla/javascript/lc/type/impl/factory/WithCacheFactory.java
+@@ -61,7 +61,7 @@ public abstract class WithCacheFactory implements FactoryBase {
+     @Override
+     public Map<VariableTypeInfo, TypeInfo> getConsolidationMapping(Class<?> from) {
+         if (from == null || from == Object.class || from.isPrimitive()) {
+-            return Map.of();
++            return org.mozilla.javascript.J8Compat.mapOf();
+         }
+         // no computeIfAbsent because `computeTypeReplacement(...)` will recursively call this
+         // method again
+diff --git a/rhino/src/main/java/org/mozilla/javascript/optimizer/OptRuntime.java b/rhino/src/main/java/org/mozilla/javascript/optimizer/OptRuntime.java
+index 5438103..24999b4 100644
+--- a/rhino/src/main/java/org/mozilla/javascript/optimizer/OptRuntime.java
++++ b/rhino/src/main/java/org/mozilla/javascript/optimizer/OptRuntime.java
+@@ -238,7 +238,7 @@ public final class OptRuntime extends ScriptRuntime {
+     // appropriate scaffolding for calling static interface methods.
+     @SafeVarargs
+     public static <E> List<E> listOf(E... items) {
+-        return List.of((E[]) items);
++        return org.mozilla.javascript.J8Compat.listOf((E[]) items);
+     }
+ 
+     public static void main(final Script script, final String[] args) {
+diff --git a/rhino/src/main/java/org/mozilla/javascript/regexp/NativeRegExp.java b/rhino/src/main/java/org/mozilla/javascript/regexp/NativeRegExp.java
+index 4968406..999ddcb 100644
+--- a/rhino/src/main/java/org/mozilla/javascript/regexp/NativeRegExp.java
++++ b/rhino/src/main/java/org/mozilla/javascript/regexp/NativeRegExp.java
+@@ -4124,7 +4124,7 @@ public class NativeRegExp extends IdScriptableObject {
+                             ScriptRuntime.toString(replaceValue));
+         } else {
+             replaceFn = (Callable) replaceValue;
+-            replaceOps = List.of();
++            replaceOps = org.mozilla.javascript.J8Compat.listOf();
+         }
+         String flags = ScriptRuntime.toString(ScriptRuntime.getObjectProp(thisObj, "flags", cx));
+         boolean fullUnicode = flags.indexOf('u') != -1 || flags.indexOf('v') != -1;
+@@ -4247,7 +4247,7 @@ public class NativeRegExp extends IdScriptableObject {
+                             ScriptRuntime.toString(replaceValue));
+         } else {
+             replaceFn = (Callable) replaceValue;
+-            replaceOps = List.of();
++            replaceOps = org.mozilla.javascript.J8Compat.listOf();
+         }
+         String flags = ScriptRuntime.toString(ScriptRuntime.getObjectProp(thisObj, "flags", cx));
+         boolean global = flags.indexOf('g') != -1;
+diff --git a/rhino/src/main/java/org/mozilla/javascript/regexp/UnicodeProperties.java b/rhino/src/main/java/org/mozilla/javascript/regexp/UnicodeProperties.java
+index 4317566..330ecb1 100644
+--- a/rhino/src/main/java/org/mozilla/javascript/regexp/UnicodeProperties.java
++++ b/rhino/src/main/java/org/mozilla/javascript/regexp/UnicodeProperties.java
+@@ -70,112 +70,112 @@ public class UnicodeProperties {
+ 
+     // Property Name Map (canonical names and aliases)
+     public static final Map<String, Byte> PROPERTY_NAMES =
+-            Map.ofEntries(
+-                    Map.entry("Alphabetic", ALPHABETIC),
+-                    Map.entry("Alpha", ALPHABETIC),
+-                    Map.entry("ASCII", ASCII),
+-                    Map.entry("Case_Ignorable", CASE_IGNORABLE),
+-                    Map.entry("CI", CASE_IGNORABLE),
+-                    Map.entry("General_Category", GENERAL_CATEGORY),
+-                    Map.entry("gc", GENERAL_CATEGORY),
+-                    Map.entry("Script", SCRIPT),
+-                    Map.entry("sc", SCRIPT),
+-                    Map.entry("ASCII_Hex_Digit", ASCII_HEX_DIGIT),
+-                    Map.entry("AHex", ASCII_HEX_DIGIT),
+-                    Map.entry("Hex_Digit", HEX_DIGIT),
+-                    Map.entry("Hex", HEX_DIGIT),
+-                    Map.entry("ID_Continue", ID_CONTINUE),
+-                    Map.entry("IDC", ID_CONTINUE),
+-                    Map.entry("ID_Start", ID_START),
+-                    Map.entry("IDS", ID_START),
+-                    Map.entry("Lowercase", LOWERCASE),
+-                    Map.entry("Lower", LOWERCASE),
+-                    Map.entry("Uppercase", UPPERCASE),
+-                    Map.entry("Upper", UPPERCASE),
+-                    Map.entry("White_Space", WHITE_SPACE),
+-                    Map.entry("space", WHITE_SPACE));
++            org.mozilla.javascript.J8Compat.mapOfEntries(
++                    org.mozilla.javascript.J8Compat.entry("Alphabetic", ALPHABETIC),
++                    org.mozilla.javascript.J8Compat.entry("Alpha", ALPHABETIC),
++                    org.mozilla.javascript.J8Compat.entry("ASCII", ASCII),
++                    org.mozilla.javascript.J8Compat.entry("Case_Ignorable", CASE_IGNORABLE),
++                    org.mozilla.javascript.J8Compat.entry("CI", CASE_IGNORABLE),
++                    org.mozilla.javascript.J8Compat.entry("General_Category", GENERAL_CATEGORY),
++                    org.mozilla.javascript.J8Compat.entry("gc", GENERAL_CATEGORY),
++                    org.mozilla.javascript.J8Compat.entry("Script", SCRIPT),
++                    org.mozilla.javascript.J8Compat.entry("sc", SCRIPT),
++                    org.mozilla.javascript.J8Compat.entry("ASCII_Hex_Digit", ASCII_HEX_DIGIT),
++                    org.mozilla.javascript.J8Compat.entry("AHex", ASCII_HEX_DIGIT),
++                    org.mozilla.javascript.J8Compat.entry("Hex_Digit", HEX_DIGIT),
++                    org.mozilla.javascript.J8Compat.entry("Hex", HEX_DIGIT),
++                    org.mozilla.javascript.J8Compat.entry("ID_Continue", ID_CONTINUE),
++                    org.mozilla.javascript.J8Compat.entry("IDC", ID_CONTINUE),
++                    org.mozilla.javascript.J8Compat.entry("ID_Start", ID_START),
++                    org.mozilla.javascript.J8Compat.entry("IDS", ID_START),
++                    org.mozilla.javascript.J8Compat.entry("Lowercase", LOWERCASE),
++                    org.mozilla.javascript.J8Compat.entry("Lower", LOWERCASE),
++                    org.mozilla.javascript.J8Compat.entry("Uppercase", UPPERCASE),
++                    org.mozilla.javascript.J8Compat.entry("Upper", UPPERCASE),
++                    org.mozilla.javascript.J8Compat.entry("White_Space", WHITE_SPACE),
++                    org.mozilla.javascript.J8Compat.entry("space", WHITE_SPACE));
+ 
+     // Property Value Map for General Category (canonical names and aliases)
+     public static final Map<String, Byte> PROPERTY_VALUES =
+-            Map.<String, Byte>ofEntries(
+-                    Map.entry("Other", OTHER),
+-                    Map.entry("C", OTHER),
+-                    Map.entry("Control", CONTROL),
+-                    Map.entry("Cc", CONTROL),
+-                    Map.entry("cntrl", CONTROL),
+-                    Map.entry("Format", FORMAT),
+-                    Map.entry("Cf", FORMAT),
+-                    Map.entry("Unassigned", UNASSIGNED),
+-                    Map.entry("Cn", UNASSIGNED),
+-                    Map.entry("Private_Use", PRIVATE_USE),
+-                    Map.entry("Co", PRIVATE_USE),
+-                    Map.entry("Surrogate", SURROGATE),
+-                    Map.entry("Cs", SURROGATE),
+-                    Map.entry("Letter", LETTER),
+-                    Map.entry("L", LETTER),
+-                    Map.entry("Lowercase_Letter", LOWERCASE_LETTER),
+-                    Map.entry("Ll", LOWERCASE_LETTER),
+-                    Map.entry("Modifier_Letter", MODIFIER_LETTER),
+-                    Map.entry("Lm", MODIFIER_LETTER),
+-                    Map.entry("Other_Letter", OTHER_LETTER),
+-                    Map.entry("Lo", OTHER_LETTER),
+-                    Map.entry("Titlecase_Letter", TITLECASE_LETTER),
+-                    Map.entry("Lt", TITLECASE_LETTER),
+-                    Map.entry("Uppercase_Letter", UPPERCASE_LETTER),
+-                    Map.entry("Lu", UPPERCASE_LETTER),
+-                    Map.entry("Mark", MARK),
+-                    Map.entry("M", MARK),
+-                    Map.entry("Combining_Mark", MARK),
+-                    Map.entry("Spacing_Mark", SPACING_MARK),
+-                    Map.entry("Mc", SPACING_MARK),
+-                    Map.entry("Enclosing_Mark", ENCLOSING_MARK),
+-                    Map.entry("Me", ENCLOSING_MARK),
+-                    Map.entry("Nonspacing_Mark", NONSPACING_MARK),
+-                    Map.entry("Mn", NONSPACING_MARK),
+-                    Map.entry("Number", NUMBER),
+-                    Map.entry("N", NUMBER),
+-                    Map.entry("Decimal_Number", DECIMAL_NUMBER),
+-                    Map.entry("Nd", DECIMAL_NUMBER),
+-                    Map.entry("digit", NUMBER),
+-                    Map.entry("Letter_Number", LETTER_NUMBER),
+-                    Map.entry("Nl", LETTER_NUMBER),
+-                    Map.entry("Other_Number", OTHER_NUMBER),
+-                    Map.entry("No", OTHER_NUMBER),
+-                    Map.entry("Punctuation", PUNCTUATION),
+-                    Map.entry("P", PUNCTUATION),
+-                    Map.entry("punct", PUNCTUATION),
+-                    Map.entry("Connector_Punctuation", CONNECTOR_PUNCTUATION),
+-                    Map.entry("Pc", CONNECTOR_PUNCTUATION),
+-                    Map.entry("Dash_Punctuation", DASH_PUNCTUATION),
+-                    Map.entry("Pd", DASH_PUNCTUATION),
+-                    Map.entry("Close_Punctuation", CLOSE_PUNCTUATION),
+-                    Map.entry("Pe", CLOSE_PUNCTUATION),
+-                    Map.entry("Final_Punctuation", FINAL_PUNCTUATION),
+-                    Map.entry("Pf", FINAL_PUNCTUATION),
+-                    Map.entry("Initial_Punctuation", INITIAL_PUNCTUATION),
+-                    Map.entry("Pi", INITIAL_PUNCTUATION),
+-                    Map.entry("Other_Punctuation", OTHER_PUNCTUATION),
+-                    Map.entry("Po", OTHER_PUNCTUATION),
+-                    Map.entry("Open_Punctuation", OPEN_PUNCTUATION),
+-                    Map.entry("Ps", OPEN_PUNCTUATION),
+-                    Map.entry("Symbol", SYMBOL),
+-                    Map.entry("S", SYMBOL),
+-                    Map.entry("Currency_Symbol", CURRENCY_SYMBOL),
+-                    Map.entry("Sc", CURRENCY_SYMBOL),
+-                    Map.entry("Modifier_Symbol", MODIFIER_SYMBOL),
+-                    Map.entry("Sk", MODIFIER_SYMBOL),
+-                    Map.entry("Math_Symbol", MATH_SYMBOL),
+-                    Map.entry("Sm", MATH_SYMBOL),
+-                    Map.entry("Other_Symbol", OTHER_SYMBOL),
+-                    Map.entry("So", OTHER_SYMBOL),
+-                    Map.entry("Separator", SEPARATOR),
+-                    Map.entry("Z", SEPARATOR),
+-                    Map.entry("Line_Separator", LINE_SEPARATOR),
+-                    Map.entry("Zl", LINE_SEPARATOR),
+-                    Map.entry("Paragraph_Separator", PARAGRAPH_SEPARATOR),
+-                    Map.entry("Zp", PARAGRAPH_SEPARATOR),
+-                    Map.entry("Space_Separator", SPACE_SEPARATOR),
+-                    Map.entry("Zs", SPACE_SEPARATOR));
++            org.mozilla.javascript.J8Compat.<String, Byte>mapOfEntries(
++                    org.mozilla.javascript.J8Compat.entry("Other", OTHER),
++                    org.mozilla.javascript.J8Compat.entry("C", OTHER),
++                    org.mozilla.javascript.J8Compat.entry("Control", CONTROL),
++                    org.mozilla.javascript.J8Compat.entry("Cc", CONTROL),
++                    org.mozilla.javascript.J8Compat.entry("cntrl", CONTROL),
++                    org.mozilla.javascript.J8Compat.entry("Format", FORMAT),
++                    org.mozilla.javascript.J8Compat.entry("Cf", FORMAT),
++                    org.mozilla.javascript.J8Compat.entry("Unassigned", UNASSIGNED),
++                    org.mozilla.javascript.J8Compat.entry("Cn", UNASSIGNED),
++                    org.mozilla.javascript.J8Compat.entry("Private_Use", PRIVATE_USE),
++                    org.mozilla.javascript.J8Compat.entry("Co", PRIVATE_USE),
++                    org.mozilla.javascript.J8Compat.entry("Surrogate", SURROGATE),
++                    org.mozilla.javascript.J8Compat.entry("Cs", SURROGATE),
++                    org.mozilla.javascript.J8Compat.entry("Letter", LETTER),
++                    org.mozilla.javascript.J8Compat.entry("L", LETTER),
++                    org.mozilla.javascript.J8Compat.entry("Lowercase_Letter", LOWERCASE_LETTER),
++                    org.mozilla.javascript.J8Compat.entry("Ll", LOWERCASE_LETTER),
++                    org.mozilla.javascript.J8Compat.entry("Modifier_Letter", MODIFIER_LETTER),
++                    org.mozilla.javascript.J8Compat.entry("Lm", MODIFIER_LETTER),
++                    org.mozilla.javascript.J8Compat.entry("Other_Letter", OTHER_LETTER),
++                    org.mozilla.javascript.J8Compat.entry("Lo", OTHER_LETTER),
++                    org.mozilla.javascript.J8Compat.entry("Titlecase_Letter", TITLECASE_LETTER),
++                    org.mozilla.javascript.J8Compat.entry("Lt", TITLECASE_LETTER),
++                    org.mozilla.javascript.J8Compat.entry("Uppercase_Letter", UPPERCASE_LETTER),
++                    org.mozilla.javascript.J8Compat.entry("Lu", UPPERCASE_LETTER),
++                    org.mozilla.javascript.J8Compat.entry("Mark", MARK),
++                    org.mozilla.javascript.J8Compat.entry("M", MARK),
++                    org.mozilla.javascript.J8Compat.entry("Combining_Mark", MARK),
++                    org.mozilla.javascript.J8Compat.entry("Spacing_Mark", SPACING_MARK),
++                    org.mozilla.javascript.J8Compat.entry("Mc", SPACING_MARK),
++                    org.mozilla.javascript.J8Compat.entry("Enclosing_Mark", ENCLOSING_MARK),
++                    org.mozilla.javascript.J8Compat.entry("Me", ENCLOSING_MARK),
++                    org.mozilla.javascript.J8Compat.entry("Nonspacing_Mark", NONSPACING_MARK),
++                    org.mozilla.javascript.J8Compat.entry("Mn", NONSPACING_MARK),
++                    org.mozilla.javascript.J8Compat.entry("Number", NUMBER),
++                    org.mozilla.javascript.J8Compat.entry("N", NUMBER),
++                    org.mozilla.javascript.J8Compat.entry("Decimal_Number", DECIMAL_NUMBER),
++                    org.mozilla.javascript.J8Compat.entry("Nd", DECIMAL_NUMBER),
++                    org.mozilla.javascript.J8Compat.entry("digit", NUMBER),
++                    org.mozilla.javascript.J8Compat.entry("Letter_Number", LETTER_NUMBER),
++                    org.mozilla.javascript.J8Compat.entry("Nl", LETTER_NUMBER),
++                    org.mozilla.javascript.J8Compat.entry("Other_Number", OTHER_NUMBER),
++                    org.mozilla.javascript.J8Compat.entry("No", OTHER_NUMBER),
++                    org.mozilla.javascript.J8Compat.entry("Punctuation", PUNCTUATION),
++                    org.mozilla.javascript.J8Compat.entry("P", PUNCTUATION),
++                    org.mozilla.javascript.J8Compat.entry("punct", PUNCTUATION),
++                    org.mozilla.javascript.J8Compat.entry("Connector_Punctuation", CONNECTOR_PUNCTUATION),
++                    org.mozilla.javascript.J8Compat.entry("Pc", CONNECTOR_PUNCTUATION),
++                    org.mozilla.javascript.J8Compat.entry("Dash_Punctuation", DASH_PUNCTUATION),
++                    org.mozilla.javascript.J8Compat.entry("Pd", DASH_PUNCTUATION),
++                    org.mozilla.javascript.J8Compat.entry("Close_Punctuation", CLOSE_PUNCTUATION),
++                    org.mozilla.javascript.J8Compat.entry("Pe", CLOSE_PUNCTUATION),
++                    org.mozilla.javascript.J8Compat.entry("Final_Punctuation", FINAL_PUNCTUATION),
++                    org.mozilla.javascript.J8Compat.entry("Pf", FINAL_PUNCTUATION),
++                    org.mozilla.javascript.J8Compat.entry("Initial_Punctuation", INITIAL_PUNCTUATION),
++                    org.mozilla.javascript.J8Compat.entry("Pi", INITIAL_PUNCTUATION),
++                    org.mozilla.javascript.J8Compat.entry("Other_Punctuation", OTHER_PUNCTUATION),
++                    org.mozilla.javascript.J8Compat.entry("Po", OTHER_PUNCTUATION),
++                    org.mozilla.javascript.J8Compat.entry("Open_Punctuation", OPEN_PUNCTUATION),
++                    org.mozilla.javascript.J8Compat.entry("Ps", OPEN_PUNCTUATION),
++                    org.mozilla.javascript.J8Compat.entry("Symbol", SYMBOL),
++                    org.mozilla.javascript.J8Compat.entry("S", SYMBOL),
++                    org.mozilla.javascript.J8Compat.entry("Currency_Symbol", CURRENCY_SYMBOL),
++                    org.mozilla.javascript.J8Compat.entry("Sc", CURRENCY_SYMBOL),
++                    org.mozilla.javascript.J8Compat.entry("Modifier_Symbol", MODIFIER_SYMBOL),
++                    org.mozilla.javascript.J8Compat.entry("Sk", MODIFIER_SYMBOL),
++                    org.mozilla.javascript.J8Compat.entry("Math_Symbol", MATH_SYMBOL),
++                    org.mozilla.javascript.J8Compat.entry("Sm", MATH_SYMBOL),
++                    org.mozilla.javascript.J8Compat.entry("Other_Symbol", OTHER_SYMBOL),
++                    org.mozilla.javascript.J8Compat.entry("So", OTHER_SYMBOL),
++                    org.mozilla.javascript.J8Compat.entry("Separator", SEPARATOR),
++                    org.mozilla.javascript.J8Compat.entry("Z", SEPARATOR),
++                    org.mozilla.javascript.J8Compat.entry("Line_Separator", LINE_SEPARATOR),
++                    org.mozilla.javascript.J8Compat.entry("Zl", LINE_SEPARATOR),
++                    org.mozilla.javascript.J8Compat.entry("Paragraph_Separator", PARAGRAPH_SEPARATOR),
++                    org.mozilla.javascript.J8Compat.entry("Zp", PARAGRAPH_SEPARATOR),
++                    org.mozilla.javascript.J8Compat.entry("Space_Separator", SPACE_SEPARATOR),
++                    org.mozilla.javascript.J8Compat.entry("Zs", SPACE_SEPARATOR));
+ 
+     /**
+      * Looks up a property name and optionally a value and returns an encoded int. For binary
