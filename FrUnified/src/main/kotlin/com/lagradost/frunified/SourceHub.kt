@@ -31,9 +31,11 @@ import java.util.concurrent.ConcurrentHashMap
  */
 object SourceHub {
 
-    private const val SEARCH_TIMEOUT_MS = 20_000L
-    private const val LOAD_TIMEOUT_MS = 25_000L
-    private const val LINKS_TIMEOUT_MS = 45_000L
+    // Réseau mobile (souvent lent) : des timeouts trop courts transformaient
+    // une simple lenteur en « 0 résultat » / « fiche introuvable ».
+    private const val SEARCH_TIMEOUT_MS = 35_000L
+    private const val LOAD_TIMEOUT_MS = 50_000L
+    private const val LINKS_TIMEOUT_MS = 100_000L
 
     /** Sources à ignorer (méta-providers, doublons, agrégateurs). */
     private val BLACKLIST = setOf(FrUnifiedProvider.PROVIDER_NAME, "Multi", "MultiFR")
@@ -97,7 +99,12 @@ object SourceHub {
      * 2. Sinon, recherche textuelle multi-titres + appariement [TitleMatch].
      */
     /** Détail d'un échec d'appariement (pour les boutons Tester). */
-    data class LocateInfo(val results: Int = 0, val bestScore: Double = 0.0, val directId: Boolean = false)
+    data class LocateInfo(
+        val results: Int = 0,
+        val bestScore: Double = 0.0,
+        val directId: Boolean = false,
+        val searchError: String? = null
+    )
 
     private suspend fun locate(api: MainAPI, payload: PlayPayload): String? = locateFull(api, payload).first
 
@@ -136,13 +143,19 @@ object SourceHub {
 
         var best: Pair<Double, String>? = null
         var totalResults = 0
+        var lastSearchError: String? = null
 
         for (query in queries) {
             var results = withTimeoutOrNull(SEARCH_TIMEOUT_MS) {
                 runCatching {
                     if (api.hasQuickSearch) api.quickSearch(query) ?: api.search(query)
                     else api.search(query)
-                }.getOrElse { runCatching { api.search(query) }.getOrNull() }
+                }.onFailure { t -> lastSearchError = t.message?.take(60) ?: t::class.simpleName.orEmpty() }
+                    .getOrElse {
+                        runCatching { api.search(query) }
+                            .onFailure { t2 -> lastSearchError = t2.message?.take(60) ?: t2::class.simpleName.orEmpty() }
+                            .getOrNull()
+                    }
             }.orEmpty()
             totalResults = maxOf(totalResults, results.size)
 
@@ -175,7 +188,7 @@ object SourceHub {
 
         val url = best?.second
         matchCache[cacheKey] = (now + MATCH_TTL_MS) to url
-        return url to LocateInfo(results = totalResults, bestScore = best?.first ?: 0.0)
+        return url to LocateInfo(results = totalResults, bestScore = best?.first ?: 0.0, searchError = lastSearchError)
     }
 
     /** Résolution directe par identifiant (IMDb / MAL / AniList / Simkl). */
@@ -288,6 +301,8 @@ object SourceHub {
         if (url == null) {
             lastErrors[api.name] = when {
                 info.directId -> "✗ fiche introuvable (ID direct)"
+                info.results == 0 && info.searchError != null ->
+                    "✗ fiche introuvable (recherche cassée: ${info.searchError})"
                 info.results == 0 -> "✗ fiche introuvable (recherche: 0 résultat)"
                 else -> "✗ fiche introuvable (${info.results} résultats, score max ${"%.2f".format(info.bestScore)})"
             }

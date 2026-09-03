@@ -39,7 +39,7 @@ object NuvioClient {
 
     private const val SCRIPT_TTL_MS = 12 * 60 * 60 * 1000L   // 12 h
     private const val MANIFEST_TTL_MS = 6 * 60 * 60 * 1000L  // 6 h
-    private const val SCRAPER_TIMEOUT_MS = 60_000L
+    private const val SCRAPER_TIMEOUT_MS = 90_000L
     private const val NUVIO_CONCURRENCY = 6
 
     private const val NETWORK_TIMEOUT_MS = 20_000
@@ -74,6 +74,11 @@ object NuvioClient {
     /** Résultats du dernier passage (id scrapeur -> « ✓ 12 liens » ou « ✗ raison »). */
     private val lastResults = ConcurrentHashMap<String, String>()
     fun diagnostics(): Map<String, String> = lastResults.toMap()
+
+    /** Télémétrie par scrapeur : dernières requêtes HTTP et lignes console JS. */
+    private val fetchLog = ConcurrentHashMap<String, MutableList<String>>()
+    private val consoleLog = ConcurrentHashMap<String, List<String>>()
+    private val currentScraper = ThreadLocal<String?>()
 
     @Volatile
     private var cacheDir: File? = null
@@ -207,17 +212,30 @@ object NuvioClient {
         payload: PlayPayload,
         callback: (ExtractorLink) -> Unit
     ): Boolean = withContext(Dispatchers.IO) {
-        val code = script(scraper)
+        currentScraper.set(scraper.id)
+        fetchLog[scraper.id] = mutableListOf()
+        consoleLog[scraper.id] = emptyList()
+        val code = try {
+            script(scraper)
+        } catch (t: Throwable) {
+            lastResults[scraper.id] = "✗ script: " + (t.message?.take(80) ?: t::class.simpleName.orEmpty())
+            currentScraper.remove()
+            return@withContext false
+        }
         if (code == null) {
             lastResults[scraper.id] = "✗ script introuvable"
+            currentScraper.remove()
             return@withContext false
         }
 
         val cx = try {
             RhinoContext.enter()
         } catch (t: Throwable) {
+            lastResults[scraper.id] = "✗ moteur: " + (t.message?.take(80) ?: t::class.simpleName.orEmpty())
+            currentScraper.remove()
             return@withContext false
         }
+        var scopeRef: Scriptable? = null
         try {
             cx.optimizationLevel = -1   // interprété : compatible ART/Android
             cx.languageVersion = RhinoContext.VERSION_ES6
@@ -226,6 +244,7 @@ object NuvioClient {
             // sans lui, le prototype des fonctions génératrices n'est pas initialisé
             // et les bundles transpilés (babel) échouent en « Cannot find function apply ».
             val scope = cx.initStandardObjects(com.frunified.rhino.TopLevel())
+            scopeRef = scope
             cx.evaluateString(scope, JS_ENV, "prelude", 1, null)
             injectEnv(scope)
 
@@ -244,7 +263,7 @@ object NuvioClient {
             try {
                 cx.evaluateString(scope, code, scraper.id, 1, null)
             } catch (t: Throwable) {
-                lastResults[scraper.id] = "✗ erreur JS : " + jsError(code, t)
+                lastResults[scraper.id] = "✗ erreur JS : " + jsError(code, t) + diagSuffix(scraper.id)
                 return@withContext false
             }
 
@@ -272,7 +291,7 @@ object NuvioClient {
             var result: Any? = try {
                 (fn as com.frunified.rhino.Callable).call(cx, scope, scope, args)
             } catch (t: Throwable) {
-                lastResults[scraper.id] = "✗ appel : " + jsError(code, t)
+                lastResults[scraper.id] = "✗ appel : " + jsError(code, t) + diagSuffix(scraper.id)
                 return@withContext false
             }
 
@@ -291,7 +310,7 @@ object NuvioClient {
                 if (ScriptableObject.getProperty(resultObj, "__rejected") == java.lang.Boolean.TRUE) {
                     val rej = ScriptableObject.getProperty(resultObj, "__value")
                     lastResults[scraper.id] =
-                        "✗ rejet : " + (rej?.toString()?.take(80) ?: "inconnu")
+                        "✗ rejet : " + (rej?.toString()?.take(80) ?: "inconnu") + diagSuffix(scraper.id)
                     return@withContext false
                 }
                 result = ScriptableObject.getProperty(resultObj, "__value")
@@ -299,7 +318,7 @@ object NuvioClient {
 
             val streams = asArray(cx, scope, result)
             if (streams == null) {
-                lastResults[scraper.id] = "✗ résultat non reconnu"
+                lastResults[scraper.id] = "✗ résultat non reconnu" + diagSuffix(scraper.id)
                 return@withContext false
             }
             var emitted = false
@@ -317,9 +336,32 @@ object NuvioClient {
             lastResults[scraper.id] = if (emitted) "✓ $count lien(s)" else "✓ 0 lien"
             emitted
         } catch (t: Throwable) {
-            false // un scrapeur qui plante ne doit jamais faire planter la lecture
+            // un scrapeur qui plante ne doit jamais faire planter la lecture
+            lastResults[scraper.id] = "✗ interne: " + (t.message?.take(80) ?: t::class.simpleName.orEmpty()) + diagSuffix(scraper.id)
+            false
         } finally {
+            captureConsole(scopeRef, scraper.id)
             RhinoContext.exit()
+            currentScraper.remove()
+        }
+    }
+
+    /** Succinct : dernières requêtes + dernière ligne console JS (pour autopsier un échec). */
+    private fun diagSuffix(id: String): String {
+        val fetches = fetchLog[id].orEmpty().takeLast(6)
+        val console = consoleLog[id].orEmpty().takeLast(2)
+        val parts = mutableListOf<String>()
+        if (fetches.isNotEmpty()) parts += fetches.joinToString("; ")
+        if (console.isNotEmpty()) parts += "js: " + console.joinToString(" | ").take(110)
+        return if (parts.isEmpty()) "" else " | " + parts.joinToString(" | ").take(260)
+    }
+
+    private fun captureConsole(scope: Scriptable?, id: String) {
+        if (scope == null) return
+        runCatching {
+            val arr = scope.get("__console_lines", scope) as? Scriptable ?: return
+            val n = runCatching { RhinoContext.toNumber(ScriptableObject.getProperty(arr, "length")).toInt() }.getOrDefault(0)
+            if (n > 0) consoleLog[id] = (0 until n).map { RhinoContext.toString(ScriptableObject.getProperty(arr, it)) }
         }
     }
 
@@ -573,23 +615,31 @@ object NuvioClient {
             }
         }
         val out = StringBuilder()
+        var anyOk = false
         for (tc in cases) {
             val links = java.util.concurrent.CopyOnWriteArrayList<ExtractorLink>()
+            // Les tests partent TOUS en parallèle depuis l'écran de réglages ;
+            // sur un réseau mobile, 26 moteurs Rhino simultanés saturaient tout
+            // et chaque scrapeur dépassait son timeout. On les sérialise via le
+            // même sémaphore que la lecture réelle (6 en parallèle max).
             val ok = runCatching {
-                withTimeoutOrNull(90_000L) {
-                    runScraper(scraper, tc.tmdbId, tc.type, tc.season, tc.episode, tc.payload) { links += it }
-                } ?: false
+                syncSemaphore()
+                semaphore.withPermit {
+                    withTimeoutOrNull(150_000L) {
+                        runScraper(scraper, tc.tmdbId, tc.type, tc.season, tc.episode, tc.payload) { links += it }
+                    } ?: false
+                }
             }.getOrDefault(false)
             if (ok) {
+                anyOk = true
                 out.append("${tc.label}: ${links.size} lien(s)")
             } else {
-                out.append("${tc.label}: ✗ " + (diagnostics()[scraper.id] ?: "aucun résultat"))
+                val diag = diagnostics()[scraper.id] ?: "aucun résultat (timeout ?)"
+                out.append(if (diag.startsWith("✓")) "${tc.label}: 0 lien" else "${tc.label}: ✗ $diag")
             }
         }
         val txt = out.toString()
-        return if (txt.contains("lien(s)") || txt.contains("✓ ")) {
-            "✓ " + txt.replace(Regex(": ✓ |: ✗ "), " · ")
-        } else txt
+        return if (anyOk) "✓ " + txt.replace(Regex(": ✓ |: ✗ "), " · ") else txt
     }
 
     private data class TestCase(
@@ -636,7 +686,17 @@ object NuvioClient {
                 ScriptableObject.getProperty(opts, "body")?.toString()?.takeIf { it.isNotEmpty() }
             }.getOrNull()
 
+            val t0 = System.currentTimeMillis()
             val (status, text) = doHttp(url, method, headerMap, body)
+            val ms = System.currentTimeMillis() - t0
+            currentScraper.get()?.let { id ->
+                runCatching {
+                    val host = runCatching { URL(url).host }.getOrDefault("?")
+                    val list = fetchLog.computeIfAbsent(id) { mutableListOf() }
+                    list.add("$method $host → $status (${ms}ms)")
+                    while (list.size > 40) list.removeAt(0)
+                }
+            }
             return makeResponse(cx, scope, status, text)
         }
 
@@ -663,7 +723,13 @@ object NuvioClient {
     // ------------------------------------------------------- préambule JS
 
     private val JS_ENV = """
-var console = { log:function(){}, warn:function(){}, error:function(){}, debug:function(){} };
+var __console_lines = [];
+var console = {
+  log:function(x){ try { __console_lines.push(String(x)); if (__console_lines.length > 25) __console_lines.shift(); } catch (e) {} },
+  warn:function(x){ try { __console_lines.push('[warn] ' + String(x)); if (__console_lines.length > 25) __console_lines.shift(); } catch (e) {} },
+  error:function(x){ try { __console_lines.push('[error] ' + String(x)); if (__console_lines.length > 25) __console_lines.shift(); } catch (e) {} },
+  debug:function(x){}
+};
 var global = this;
 var window = this;
 var self = this;
