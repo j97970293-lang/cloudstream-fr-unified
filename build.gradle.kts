@@ -98,7 +98,10 @@ subprojects {
     // sur org.mozilla.javascript.*). On extrait donc les classes du jar
     // Rhino et on les ajoute aux entrées de compileDex.
     // ------------------------------------------------------------------
-    val extractRhino by tasks.registering(Copy::class) {
+    // Sync (et non Copy) : efface les classes d'un build précédent, sinon les
+    // anciennes org/mozilla/javascript (v5-v7) restaient dans build/rhino-classes
+    // et étaient déxées en double avec com/frunified/rhino.
+    val extractRhino by tasks.registering(Sync::class) {
         from(zipTree(project.file("libs/rhino-embed-1.9.1.jar")))
         into(layout.buildDirectory.dir("rhino-classes"))
         duplicatesStrategy = DuplicatesStrategy.INCLUDE

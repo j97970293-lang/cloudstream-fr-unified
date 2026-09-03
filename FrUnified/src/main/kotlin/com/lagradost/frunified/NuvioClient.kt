@@ -15,12 +15,12 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
-import org.mozilla.javascript.BaseFunction
-import org.mozilla.javascript.Context as RhinoContext
-import org.mozilla.javascript.ScriptRuntime
-import org.mozilla.javascript.NativeArray
-import org.mozilla.javascript.Scriptable
-import org.mozilla.javascript.ScriptableObject
+import com.frunified.rhino.BaseFunction
+import com.frunified.rhino.Context as RhinoContext
+import com.frunified.rhino.ScriptRuntime
+import com.frunified.rhino.NativeArray
+import com.frunified.rhino.Scriptable
+import com.frunified.rhino.ScriptableObject
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
@@ -225,7 +225,7 @@ object NuvioClient {
             // IMPORTANT : TopLevel() active le cache des builtins (cacheBuiltins) :
             // sans lui, le prototype des fonctions génératrices n'est pas initialisé
             // et les bundles transpilés (babel) échouent en « Cannot find function apply ».
-            val scope = cx.initStandardObjects(org.mozilla.javascript.TopLevel())
+            val scope = cx.initStandardObjects(com.frunified.rhino.TopLevel())
             cx.evaluateString(scope, JS_ENV, "prelude", 1, null)
             injectEnv(scope)
 
@@ -257,7 +257,7 @@ object NuvioClient {
             if (fn == null || fn == Scriptable.NOT_FOUND) {
                 runCatching { fn = scope.get("getStreams", scope) }
             }
-            if (fn == null || fn == Scriptable.NOT_FOUND || fn !is org.mozilla.javascript.Callable) {
+            if (fn == null || fn == Scriptable.NOT_FOUND || fn !is com.frunified.rhino.Callable) {
                 lastResults[scraper.id] = "✗ getStreams introuvable"
                 return@withContext false
             }
@@ -270,7 +270,7 @@ object NuvioClient {
             )
 
             var result: Any? = try {
-                (fn as org.mozilla.javascript.Callable).call(cx, scope, scope, args)
+                (fn as com.frunified.rhino.Callable).call(cx, scope, scope, args)
             } catch (t: Throwable) {
                 lastResults[scraper.id] = "✗ appel : " + jsError(code, t)
                 return@withContext false
@@ -325,7 +325,7 @@ object NuvioClient {
 
     private fun callJs(cx: RhinoContext, scope: Scriptable, name: String, args: Array<Any?>): Any? =
         runCatching {
-            (scope.get(name, scope) as? org.mozilla.javascript.Callable)?.call(cx, scope, scope, args)
+            (scope.get(name, scope) as? com.frunified.rhino.Callable)?.call(cx, scope, scope, args)
         }.getOrNull()
 
     private fun drain(cx: RhinoContext, scope: Scriptable) {
@@ -338,7 +338,7 @@ object NuvioClient {
 
     private fun asArray(cx: RhinoContext, scope: Scriptable, value: Any?): Scriptable? {
         if (value is NativeArray) return value
-        if (value is org.mozilla.javascript.NativeJavaObject) {
+        if (value is com.frunified.rhino.NativeJavaObject) {
             val unwrapped = runCatching { value.unwrap() }.getOrNull()
             if (unwrapped is List<*>) {
                 val arr = cx.newArray(scope, unwrapped.size)
@@ -474,7 +474,7 @@ object NuvioClient {
     private fun jsError(code: String, t: Throwable): String {
         val cls = t::class.simpleName.orEmpty()
         val msg = (t.message ?: "").replace("\n", " ").take(90)
-        val line = (t as? org.mozilla.javascript.RhinoException)?.lineNumber() ?: -1
+        val line = (t as? com.frunified.rhino.RhinoException)?.lineNumber() ?: -1
         val snippet = if (line > 0) {
             code.lineSequence().elementAtOrNull(line - 1)?.trim()?.take(110)
                 ?.let { " | l${line}: $it" }.orEmpty()

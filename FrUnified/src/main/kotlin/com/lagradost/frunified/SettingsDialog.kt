@@ -203,7 +203,8 @@ private fun palette(context: Context): Palette {
 
 private val ACCENTS = listOf(
     "#7C5CFF", "#4D9FFF", "#F5A623", "#4CAF7D",
-    "#E96AA0", "#1FB6C1", "#FF8A3D", "#9B6DFF"
+    "#E96AA0", "#1FB6C1", "#FF8A3D", "#9B6DFF",
+    "#39D98A"
 )
 
 object SettingsDialog {
@@ -476,6 +477,82 @@ object SettingsDialog {
         })
         root.addView(sProv)
 
+        // ================================================== 5b. Sources CloudStream
+        val sCs = Section(context, Color.parseColor(ACCENTS[8]), "🧲",
+            "Sources CloudStream", "Extensions FR installées", p)
+        val csContainer = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+        sCs.addToBody(TextView(context).label(context,
+            "Chargement des extensions…", 12f, p.sub))
+        sCs.addToBody(csContainer)
+        val srcNames = mutableListOf<String>()
+        val srcCheckboxes = mutableListOf<CheckBox>()
+        fun refreshSrcCount() {
+            val on = srcCheckboxes.count { it.isChecked }
+            sCs.setSummary("$on / ${srcNames.size} activées")
+        }
+        GlobalScope.launch {
+            val sources = SourceHub.detectedSources()
+            withContext(Dispatchers.Main) {
+                if (csContainer.childCount > 0 && csContainer.getChildAt(0) is TextView) {
+                    (csContainer.getChildAt(0) as TextView).text = ""
+                }
+                if (sources.isEmpty()) {
+                    sCs.addToBody(TextView(context).label(context,
+                        "Aucune extension française détectée : installez les addons " +
+                            "(French-Stream, Movix, Wiflix, FrenchAnime, Frembed, FSTV, Karma…) " +
+                            "dans CloudStream — FR Unifié s'en sert comme sources de liens.",
+                        12f, p.sub))
+                } else {
+                    srcNames.addAll(sources.map { it.name })
+                    sources.forEach { api ->
+                        val row = LinearLayout(context).apply {
+                            orientation = LinearLayout.HORIZONTAL
+                            gravity = Gravity.CENTER_VERTICAL
+                        }
+                        val box = CheckBox(context).apply {
+                            text = api.name + "  ·  " + api.lang.ifBlank { "?" }
+                            isChecked = FrSettings.isSourceEnabled(api.name)
+                            setTextColor(p.title)
+                            textSize = 14f
+                            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                            setOnCheckedChangeListener { _, _ -> refreshSrcCount() }
+                        }
+                        val testBtn = Button(context).apply {
+                            text = "Tester"
+                            textSize = 12f
+                            minHeight = 0
+                            minimumHeight = 0
+                            setPadding(context.dp(10), context.dp(4), context.dp(10), context.dp(4))
+                        }
+                        row.addView(box)
+                        row.addView(testBtn)
+                        csContainer.addView(row)
+                        val result = TextView(context).apply {
+                            textSize = 11f
+                            setPadding(context.dp(20), 0, 0, context.dp(4))
+                        }
+                        csContainer.addView(result)
+                        srcCheckboxes.add(box)
+                        testBtn.setOnClickListener {
+                            result.setTextColor(p.sub)
+                            result.text = "Test en cours…"
+                            testBtn.isEnabled = false
+                            GlobalScope.launch {
+                                val verdict = SourceHub.testSource(api.name)
+                                withContext(Dispatchers.Main) {
+                                    result.text = verdict
+                                    result.setTextColor(if (verdict.startsWith("✓")) p.ok else p.err)
+                                    testBtn.isEnabled = true
+                                }
+                            }
+                        }
+                    }
+                    refreshSrcCount()
+                }
+            }
+        }
+        root.addView(sCs)
+
         // ================================================== 6. Addons Stremio
         val sStremio = Section(context, Color.parseColor(ACCENTS[5]), "📺",
             "Addons Stremio", "Torrentio, Comet, debrid perso…", p,
@@ -507,7 +584,7 @@ object SettingsDialog {
         sCredits.addToBody(TextView(context).label(context,
             "Un seul catalogue (TMDB + AniList) qui agrège les extensions françaises " +
                 "installées, les addons Stremio et les scrapeurs Nuvio.\n\n" +
-                "Moteur : Rhino 1.9.1 (patchs yield/spread) · Dépôts Nuvio : Gowaru, z7kx, Phisher.\n" +
+                "Moteur : Rhino 1.9.1 patché et relogé (com.frunified.rhino, invisible pour l\u2019app) · Dépôts Nuvio : Gowaru, z7kx, Phisher.\n" +
                 "Astuce : utilisez les boutons « Tester » pour diagnostiquer chaque serveur.",
             12f, p.sub))
         root.addView(sCredits)
@@ -556,6 +633,9 @@ object SettingsDialog {
                     nuvioScrapers.getOrNull(index)?.let { scraper ->
                         FrSettings.setNuvioEnabled(scraper.id, box.isChecked)
                     }
+                }
+                srcCheckboxes.forEachIndexed { index, box ->
+                    srcNames.getOrNull(index)?.let { FrSettings.setSourceEnabled(it, box.isChecked) }
                 }
 
                 val oldRepos = FrSettings.nuvioRepos
