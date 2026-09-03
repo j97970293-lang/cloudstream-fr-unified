@@ -96,15 +96,20 @@ object SourceHub {
      *    textuelle — c'est exact et instantané.
      * 2. Sinon, recherche textuelle multi-titres + appariement [TitleMatch].
      */
-    private suspend fun locate(api: MainAPI, payload: PlayPayload): String? {
+    /** Détail d'un échec d'appariement (pour les boutons Tester). */
+    data class LocateInfo(val results: Int = 0, val bestScore: Double = 0.0, val directId: Boolean = false)
+
+    private suspend fun locate(api: MainAPI, payload: PlayPayload): String? = locateFull(api, payload).first
+
+    private suspend fun locateFull(api: MainAPI, payload: PlayPayload): Pair<String?, LocateInfo> {
         val cacheKey = "${api.name}|${payload.tmdbId ?: payload.anilistId ?: payload.malId ?: payload.primaryTitle}|${payload.year}"
         val now = System.currentTimeMillis()
-        matchCache[cacheKey]?.let { (expiry, url) -> if (expiry > now) return url }
+        matchCache[cacheKey]?.let { (expiry, url) -> if (expiry > now) return url to LocateInfo(directId = url != null) }
 
         val direct = withTimeoutOrNull(SEARCH_TIMEOUT_MS) { locateBySyncId(api, payload) }
         if (direct != null) {
             matchCache[cacheKey] = (now + MATCH_TTL_MS) to direct
-            return direct
+            return direct to LocateInfo(directId = true)
         }
 
         val queries = buildList {
@@ -130,6 +135,7 @@ object SourceHub {
             .take(6)
 
         var best: Pair<Double, String>? = null
+        var totalResults = 0
 
         for (query in queries) {
             var results = withTimeoutOrNull(SEARCH_TIMEOUT_MS) {
@@ -138,6 +144,7 @@ object SourceHub {
                     else api.search(query)
                 }.getOrElse { runCatching { api.search(query) }.getOrNull() }
             }.orEmpty()
+            totalResults = maxOf(totalResults, results.size)
 
             // quickSearch est parfois limité : on complète avec la recherche complète
             if (results.size <= 2 && api.hasQuickSearch) {
@@ -168,7 +175,7 @@ object SourceHub {
 
         val url = best?.second
         matchCache[cacheKey] = (now + MATCH_TTL_MS) to url
-        return url
+        return url to LocateInfo(results = totalResults, bestScore = best?.first ?: 0.0)
     }
 
     /** Résolution directe par identifiant (IMDb / MAL / AniList / Simkl). */
@@ -277,9 +284,13 @@ object SourceHub {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean = try {
-        val url = locate(api, payload)
+        val (url, info) = locateFull(api, payload)
         if (url == null) {
-            lastErrors[api.name] = "✗ fiche introuvable (recherche/ID)"
+            lastErrors[api.name] = when {
+                info.directId -> "✗ fiche introuvable (ID direct)"
+                info.results == 0 -> "✗ fiche introuvable (recherche: 0 résultat)"
+                else -> "✗ fiche introuvable (${info.results} résultats, score max ${"%.2f".format(info.bestScore)})"
+            }
             return false
         }
 
@@ -317,21 +328,45 @@ object SourceHub {
      */
     suspend fun testSource(name: String): String {
         val api = detectedSources().firstOrNull { it.name == name } ?: return "✗ extension introuvable"
-        val payload = PlayPayload(
-            kind = "movie",
-            titles = listOf("Fight Club"),
-            year = 1999,
-            tmdbId = 550,
-            imdbId = "tt0137523"
+        val isAnimeSource = runCatching {
+            api.lang.lowercase().startsWith("fr") &&
+                (api.name.lowercase().contains("anime") || api.name.lowercase().contains("manga"))
+        }.getOrDefault(false) ||
+            runCatching { api.supportedSyncNames.any { it.name.lowercase().contains("anilist") || it.name.lowercase().contains("myanimelist") } }.getOrDefault(false)
+
+        val cases = linkedMapOf(
+            "film" to PlayPayload(
+                kind = "movie", titles = listOf("Fight Club"), year = 1999,
+                tmdbId = 550, imdbId = "tt0137523",
+                season = 0, episode = 0
+            ),
+            "anime" to PlayPayload(
+                kind = "tv", titles = listOf("One Piece"), year = 1999,
+                tmdbId = 37854, anilistId = 21, malId = 21,
+                season = 1, episode = 1
+            )
         )
-        val links = java.util.concurrent.CopyOnWriteArrayList<ExtractorLink>()
-        val ok = runCatching {
-            withTimeoutOrNull(60_000L) {
-                linksFrom(api, payload, {}, { links += it })
-            } ?: false
-        }.getOrDefault(false)
-        return if (ok) "✓ ${links.size} lien(s) : " + links.take(3).joinToString(", ") { it.name.take(28) }
-        else (diagnostics()[api.name] ?: "✗ aucun résultat")
+
+        val parts = mutableListOf<String>()
+        var anyOk = false
+        for ((label, payload) in cases) {
+            if (!isAnimeSource && label == "anime") continue
+            if (isAnimeSource && label == "film") continue
+            val links = java.util.concurrent.CopyOnWriteArrayList<ExtractorLink>()
+            val ok = runCatching {
+                withTimeoutOrNull(60_000L) {
+                    linksFrom(api, payload, {}, { links += it })
+                } ?: false
+            }.getOrDefault(false)
+            if (ok) {
+                anyOk = true
+                val names = links.take(3).joinToString(", ") { it.name.take(22) }
+                parts += "$label: ${links.size} lien(s) ($names)"
+            } else {
+                parts += "$label: " + (diagnostics()[api.name] ?: "✗ aucun résultat")
+            }
+        }
+        return if (anyOk) "✓ " + parts.joinToString(" — ") else parts.joinToString(" — ")
     }
 
     /** Préfixe le lien par le nom de la source pour rester lisible dans le lecteur. */

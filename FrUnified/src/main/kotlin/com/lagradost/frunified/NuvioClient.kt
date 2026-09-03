@@ -545,26 +545,61 @@ object NuvioClient {
     }
 
     /**
-     * Test rapide d'UN scrapeur (bouton « Tester » des réglages) :
-     * exécute son getStreams sur Fight Club (TMDB 550) et retourne le verdict.
+     * Test rapide d'UN scrapeur (bouton « Tester » des réglages).
+     * Le contenu de test est adapté au type du scrapeur : les sites d'ANIMÉS
+     * (Anime-Sama, Neko-Sama, VostFree…) ne connaissent pas « Fight Club » —
+     * il faut un titre d'anime (One Piece, TMDB 37854) pour tester leur chemin
+     * réel. Les sites movies/tv sont testés sur Fight Club (TMDB 550).
      */
     suspend fun testProvider(id: String): String {
         val scraper = runCatching { scrapers().firstOrNull { it.id == id } }.getOrNull()
             ?: return "✗ source introuvable"
-        val payload = PlayPayload(
-            kind = "movie",
-            titles = listOf("Fight Club"),
-            year = 1999,
-            tmdbId = 550
-        )
-        val links = java.util.concurrent.CopyOnWriteArrayList<ExtractorLink>()
-        val ok = runCatching {
-            withTimeoutOrNull(90_000L) {
-                runScraper(scraper, 550, "movie", 0, 0, payload) { links += it }
-            } ?: false
-        }.getOrDefault(false)
-        return if (ok) "✓ ${links.size} serveur(s)" else "✗ " + (diagnostics()[scraper.id] ?: "aucun résultat")
+        val types = scraper.supportedTypes.map { it.lowercase() }
+        val animeLike = types.any { it.contains("anime") || it.contains("cartoon") } ||
+            types.isEmpty() || scraper.name.lowercase().contains("anime") ||
+            scraper.name.lowercase().contains("sama") || scraper.name.lowercase().contains("vost") ||
+            scraper.name.lowercase().contains("manga")
+        val wantBoth = types.any { it.contains("anime") } && types.any { it == "movie" || it == "tv" || it == "series" }
+
+        val cases = buildList {
+            if (!animeLike || wantBoth) {
+                add(TestCase("film", 550, "movie", 0, 0,
+                    PlayPayload(kind = "movie", titles = listOf("Fight Club"), year = 1999, tmdbId = 550)))
+            }
+            if (animeLike) {
+                add(TestCase("anime", 37854, "tv", 1, 1,
+                    PlayPayload(kind = "tv", titles = listOf("One Piece"), year = 1999,
+                        tmdbId = 37854, malId = 21, anilistId = 21, season = 1, episode = 1)))
+            }
+        }
+        val out = StringBuilder()
+        for (tc in cases) {
+            val links = java.util.concurrent.CopyOnWriteArrayList<ExtractorLink>()
+            val ok = runCatching {
+                withTimeoutOrNull(90_000L) {
+                    runScraper(scraper, tc.tmdbId, tc.type, tc.season, tc.episode, tc.payload) { links += it }
+                } ?: false
+            }.getOrDefault(false)
+            if (ok) {
+                out.append("${tc.label}: ${links.size} lien(s)")
+            } else {
+                out.append("${tc.label}: ✗ " + (diagnostics()[scraper.id] ?: "aucun résultat"))
+            }
+        }
+        val txt = out.toString()
+        return if (txt.contains("lien(s)") || txt.contains("✓ ")) {
+            "✓ " + txt.replace(Regex(": ✓ |: ✗ "), " · ")
+        } else txt
     }
+
+    private data class TestCase(
+        val label: String,
+        val tmdbId: Int,
+        val type: String,
+        val season: Int,
+        val episode: Int,
+        val payload: PlayPayload
+    )
 
     private class FetchFunction : BaseFunction() {
         @Suppress("DEPRECATION")
