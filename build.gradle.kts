@@ -53,6 +53,9 @@ subprojects {
         compileOptions {
             sourceCompatibility = JavaVersion.VERSION_1_8
             targetCompatibility = JavaVersion.VERSION_1_8
+            // Rhino 1.9.1 utilise des API Java 9+ (Map.entry, List.of…) :
+            // le desugaring les rend compatibles avec les vieux Androïds.
+            isCoreLibraryDesugaringEnabled = true
         }
 
         tasks.withType<KotlinJvmCompile> {
@@ -70,6 +73,7 @@ subprojects {
     dependencies {
         val implementation by configurations
         val compileOnly by configurations
+        val coreLibraryDesugaring by configurations
 
         // Classes fournies par l'application CloudStream (Plugin, coroutines, okhttp…)
         add("cloudstream", "com.lagradost:cloudstream3:pre-release")
@@ -84,6 +88,7 @@ subprojects {
         // Rhino 1.9.1 patché lokalement : yield non parenthésé en argument + call-spread
         // + compat Android (API Java 9+ remplacées). Source : mozilla/rhino tag Rhino1_9_1_Release.
         implementation(files("libs/rhino-nuvio-1.9.1.jar"))
+        coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
     }
 }
 

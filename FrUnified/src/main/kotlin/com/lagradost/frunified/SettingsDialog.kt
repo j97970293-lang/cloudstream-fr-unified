@@ -5,6 +5,7 @@ import android.content.Context
 import android.text.InputType
 import android.util.TypedValue
 import android.view.ViewGroup
+import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -143,9 +144,10 @@ object SettingsDialog {
         root.addView(
             hint(
                 context,
-                "Une URL de manifest.json par ligne.\n" +
-                    "Par défaut : Gowaru (FrenchStream, Movix, Vostfree, VoirAnime…) " +
-                    "et Phisher (MoviesDrive, AllWish…).\n" +
+                "Les dépôts sont installables : une URL de manifest.json par ligne.\n" +
+                    "Supprimez une ligne pour retirer un dépôt.\n" +
+                    "Par défaut : Gowaru (FrenchStream, Movix, Vostfree, VoirAnime…), " +
+                    "z7kx (Senpaistreaming…) et Phisher (MoviesDrive…).\n" +
                     "Autres dépôts : michat88, yoruix, D3adlyRocket…"
             )
         )
@@ -160,6 +162,65 @@ object SettingsDialog {
             )
         }
         root.addView(nuvioField)
+        root.addView(Button(context).apply {
+            text = "↺ Réinitialiser les dépôts par défaut"
+            setOnClickListener {
+                nuvioField.setText(FrSettings.DEFAULT_NUVIO_REPOS.joinToString("\n"))
+            }
+        })
+
+        // --- Réglages de classement des serveurs
+        root.addView(title(context, "Classement et limites des serveurs"))
+        root.addView(hint(context, "Nombre maximal de serveurs renvoyés par chaque source (0 = illimité)."))
+        val maxField = EditText(context).apply {
+            setText(FrSettings.nuvioMaxPerScraper.toString())
+            inputType = InputType.TYPE_CLASS_NUMBER
+        }
+        root.addView(maxField)
+
+        root.addView(
+            hint(
+                context,
+                "Serveurs prioritaires : les liens dont le titre contient un motif " +
+                    "(insensible à la casse) remontent en tête.\n" +
+                    "Ex. : VF, FRENCH, VOSTFR, 1080, FHD, HD"
+            )
+        )
+        val priorityField = EditText(context).apply {
+            setText(FrSettings.nuvioPriorityPatterns.joinToString(", "))
+            inputType = InputType.TYPE_CLASS_TEXT
+        }
+        root.addView(priorityField)
+
+        root.addView(
+            hint(
+                context,
+                "Ordre personnalisé des sources : un ID par ligne. Sinon : " +
+                    "français d'abord, puis ordre alphabétique."
+            )
+        )
+        val orderField = EditText(context).apply {
+            setText(FrSettings.nuvioOrder.joinToString("\n"))
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            minLines = 2
+            setHorizontallyScrolling(false)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        }
+        root.addView(orderField)
+        GlobalScope.launch {
+            val ids = runCatching { NuvioClient.scrapers() }.getOrDefault(emptyList())
+                .map { it.id }.joinToString("\n")
+            withContext(Dispatchers.Main) {
+                if (ids.isNotBlank()) {
+                    root.addView(
+                        hint(context, "IDs disponibles :\n" + ids)
+                    )
+                }
+            }
+        }
 
         // --- Addons Stremio
         root.addView(title(context, "Addons Stremio"))
@@ -224,6 +285,16 @@ object SettingsDialog {
                     .split("\n", ",")
                     .map { it.trim() }
                     .filter { it.startsWith("http") }
+
+                FrSettings.nuvioMaxPerScraper = maxField.text.toString().toIntOrNull() ?: 12
+                FrSettings.nuvioPriorityPatterns = priorityField.text.toString()
+                    .split(",")
+                    .map { it.trim() }
+                    .filter { it.isNotBlank() }
+                FrSettings.nuvioOrder = orderField.text.toString()
+                    .split("\n")
+                    .map { it.trim() }
+                    .filter { it.isNotBlank() }
 
                 FrSettings.stremioUrls = stremioField.text.toString()
                     .split("\n", ",", " ")

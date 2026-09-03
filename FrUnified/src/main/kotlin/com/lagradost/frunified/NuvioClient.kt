@@ -10,6 +10,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
@@ -37,8 +39,12 @@ object NuvioClient {
 
     private const val SCRIPT_TTL_MS = 12 * 60 * 60 * 1000L   // 12 h
     private const val MANIFEST_TTL_MS = 6 * 60 * 60 * 1000L  // 6 h
-    private const val MAX_LINKS_PER_SCRAPER = 30
-    private const val SCRAPER_TIMEOUT_MS = 90_000L
+    private const val SCRAPER_TIMEOUT_MS = 60_000L
+    private const val NUVIO_CONCURRENCY = 6
+
+    /** « f.push(...x) » → « f.push.apply(f, x) » (Rhino ne parse pas le spread d'appel). */
+    private val SPREAD_CALL = Regex("([A-Za-z_$][\\w$]*)\\.push\\(\\.\\.\\.([A-Za-z_$][\\w$.\\[\\]]*)\\)")
+
     private const val NETWORK_TIMEOUT_MS = 20_000
 
     data class NuvioScraper(
@@ -48,7 +54,8 @@ object NuvioClient {
         val repoBase: String,
         val supportedTypes: List<String>,
         val contentLanguage: List<String>,
-        val description: String
+        val description: String,
+        val manifestEnabled: Boolean = true
     ) {
         val isFrench: Boolean get() = contentLanguage.any { it.startsWith("fr") }
         val scriptUrl: String
@@ -59,6 +66,11 @@ object NuvioClient {
 
     private val manifestCache = ConcurrentHashMap<String, Pair<Long, List<NuvioScraper>>>()
     private val tmdbCache = ConcurrentHashMap<String, Pair<Long, Int?>>()
+    private val semaphore = Semaphore(NUVIO_CONCURRENCY)
+
+    /** Résultats du dernier passage (id scrapeur -> « ✓ 12 liens » ou « ✗ raison »). */
+    private val lastResults = ConcurrentHashMap<String, String>()
+    fun diagnostics(): Map<String, String> = lastResults.toMap()
 
     @Volatile
     private var cacheDir: File? = null
@@ -74,14 +86,29 @@ object NuvioClient {
     /** Tous les scrapeurs des dépôts configurés (filtrés : activés + langues). */
     suspend fun scrapers(): List<NuvioScraper> = coroutineScope {
         val repos = FrSettings.nuvioRepos.ifEmpty { FrSettings.DEFAULT_NUVIO_REPOS }
+            .filter { FrSettings.isNuvioRepoEnabled(it) }
         repos.map { repo ->
             async { withTimeoutOrNull(20_000L) { manifest(repo) }.orEmpty() }
         }.awaitAll().flatten()
             .filter { FrSettings.isNuvioEnabled(it.id) }
-            .filter { it.supportedTypes.any { t -> t == "movie" || t == "tv" || t.equals("series", true) } }
-            .filter { FrSettings.nuvioAllLangs || it.isFrench }
+            .filter { it.manifestEnabled }
+            .filter { it.supportedTypes.any { t ->
+                val tt = t.lowercase()
+                tt == "movie" || tt == "tv" || tt == "series" || tt == "anime" ||
+                    tt == "cartoon" || tt == "animation" || tt == "anime_movie"
+            } }
+            .filter { FrSettings.nuvioAllLangs || it.isFrench || it.contentLanguage.isEmpty() }
             .distinctBy { it.id }
-            .sortedWith(compareBy({ if (it.isFrench) 0 else 1 }, { it.name.lowercase() }))
+            .sortedWith { a, b ->
+                val oa = FrSettings.nuvioOrder.indexOf(a.id).let { if (it < 0) Int.MAX_VALUE else it }
+                val ob = FrSettings.nuvioOrder.indexOf(b.id).let { if (it < 0) Int.MAX_VALUE else it }
+                if (oa != ob) oa.compareTo(ob)
+                else {
+                    val fa = if (a.isFrench) 0 else 1
+                    val fb = if (b.isFrench) 0 else 1
+                    if (fa != fb) fa.compareTo(fb) else a.name.lowercase().compareTo(b.name.lowercase())
+                }
+            }
     }
 
     private suspend fun manifest(repo: String): List<NuvioScraper> {
@@ -105,7 +132,8 @@ object NuvioClient {
                 repoBase = base,
                 supportedTypes = stringArray(entry.optJSONArray("supportedTypes")),
                 contentLanguage = stringArray(entry.optJSONArray("contentLanguage")),
-                description = entry.optString("description")
+                description = entry.optString("description"),
+                manifestEnabled = entry.optBoolean("enabled", true)
             )
         }
 
@@ -128,18 +156,33 @@ object NuvioClient {
         val fresh = file?.takeIf { it.exists() && System.currentTimeMillis() - it.lastModified() < SCRIPT_TTL_MS }
         if (fresh != null) {
             val cached = runCatching { fresh.readText() }.getOrNull()
-            if (!cached.isNullOrBlank()) return cached
+            if (!cached.isNullOrBlank()) return normalizeBundle(cached)
         }
         val code = runCatching {
             withContext(Dispatchers.IO) { httpGet(scraper.scriptUrl, emptyMap()) }
         }.getOrNull()?.takeIf { it.isNotBlank() }
         if (code != null) runCatching { file?.writeText(code) }
-        return code
+        return code?.let { normalizeBundle(it) }
+    }
+
+    /**
+     * Adapte un bundle webpack aux limitations du parseur Rhino :
+     *  - « f.push(...liste) » (spread en argument d'appel) n'est pas supporté
+     *    par Rhino → transformé en « f.push.apply(f, liste) ».
+     * (Le reste — générateurs, for-of, spread de tableaux — est géré nativement
+     * par le Rhino 1.9.1 de NuvioClient, avec TopLevel + patch yield-en-argument.)
+     */
+    private fun normalizeBundle(code: String): String {
+        if (code.indexOf("...") < 0) return code
+        return SPREAD_CALL.replace(code) { m ->
+            "${m.groupValues[1]}.push.apply(${m.groupValues[1]}, ${m.groupValues[2]})"
+        }
     }
 
     /** Exécute tous les scrapeurs activés et relaie leurs flux. */
     suspend fun streams(payload: PlayPayload, callback: (ExtractorLink) -> Unit): Boolean {
         if (!FrSettings.useNuvio) return false
+        lastResults.clear()
 
         val tmdbId = tmdbId(payload) ?: return false
         val all = scrapers()
@@ -153,9 +196,11 @@ object NuvioClient {
             all.map { scraper ->
                 async {
                     runCatching {
-                        withTimeoutOrNull(SCRAPER_TIMEOUT_MS) {
-                            runScraper(scraper, tmdbId, mediaType, season, episode, payload, callback)
-                        } ?: false
+                        semaphore.withPermit {
+                            withTimeoutOrNull(SCRAPER_TIMEOUT_MS) {
+                                runScraper(scraper, tmdbId, mediaType, season, episode, payload, callback)
+                            } ?: false
+                        }
                     }.getOrDefault(false)
                 }
             }.awaitAll().any { it }
@@ -172,7 +217,11 @@ object NuvioClient {
         payload: PlayPayload,
         callback: (ExtractorLink) -> Unit
     ): Boolean = withContext(Dispatchers.IO) {
-        val code = script(scraper) ?: return@withContext false
+        val code = script(scraper)
+        if (code == null) {
+            lastResults[scraper.id] = "✗ script introuvable"
+            return@withContext false
+        }
 
         val cx = try {
             RhinoContext.enter()
@@ -183,7 +232,10 @@ object NuvioClient {
             cx.optimizationLevel = -1   // interprété : compatible ART/Android
             cx.languageVersion = RhinoContext.VERSION_ES6
 
-            val scope = cx.initStandardObjects()
+            // IMPORTANT : TopLevel() active le cache des builtins (cacheBuiltins) :
+            // sans lui, le prototype des fonctions génératrices n'est pas initialisé
+            // et les bundles transpilés (babel) échouent en « Cannot find function apply ».
+            val scope = cx.initStandardObjects(org.mozilla.javascript.TopLevel())
             cx.evaluateString(scope, JS_ENV, "prelude", 1, null)
 
             // module.exports / global.getStreams : les deux formats de sortie
@@ -201,6 +253,7 @@ object NuvioClient {
             try {
                 cx.evaluateString(scope, code, scraper.id, 1, null)
             } catch (t: Throwable) {
+                lastResults[scraper.id] = "✗ erreur JS : " + (t.message?.take(80) ?: t::class.simpleName.orEmpty())
                 return@withContext false
             }
 
@@ -214,6 +267,7 @@ object NuvioClient {
                 runCatching { fn = scope.get("getStreams", scope) }
             }
             if (fn == null || fn == Scriptable.NOT_FOUND || fn !is org.mozilla.javascript.Callable) {
+                lastResults[scraper.id] = "✗ getStreams introuvable"
                 return@withContext false
             }
 
@@ -227,6 +281,7 @@ object NuvioClient {
             var result: Any? = try {
                 (fn as org.mozilla.javascript.Callable).call(cx, scope, scope, args)
             } catch (t: Throwable) {
+                lastResults[scraper.id] = "✗ appel : " + (t.message?.take(80) ?: t::class.simpleName.orEmpty())
                 return@withContext false
             }
 
@@ -243,23 +298,32 @@ object NuvioClient {
                     ScriptableObject.hasProperty(resultObj, "__settled")
                 }.getOrDefault(false)) {
                 if (ScriptableObject.getProperty(resultObj, "__rejected") == java.lang.Boolean.TRUE) {
+                    val rej = ScriptableObject.getProperty(resultObj, "__value")
+                    lastResults[scraper.id] =
+                        "✗ rejet : " + (rej?.toString()?.take(80) ?: "inconnu")
                     return@withContext false
                 }
                 result = ScriptableObject.getProperty(resultObj, "__value")
             }
 
-            val streams = asArray(cx, scope, result) ?: return@withContext false
+            val streams = asArray(cx, scope, result)
+            if (streams == null) {
+                lastResults[scraper.id] = "✗ résultat non reconnu"
+                return@withContext false
+            }
             var emitted = false
             var count = 0
+            val maxHere = FrSettings.nuvioMaxPerScraper
 
             for (i in 0 until runCatching { RhinoContext.toNumber(ScriptableObject.getProperty(streams, "length")).toInt() }.getOrDefault(0)) {
-                if (count >= MAX_LINKS_PER_SCRAPER) break
+                if (maxHere > 0 && count >= maxHere) break
                 val obj = ScriptableObject.getProperty(streams, i) as? Scriptable ?: continue
                 val link = toLink(scope, scraper.name, payload, obj) ?: continue
                 emitted = true
                 count++
                 callback(link)
             }
+            lastResults[scraper.id] = if (emitted) "✓ $count lien(s)" else "✓ 0 lien"
             emitted
         } catch (t: Throwable) {
             false // un scrapeur qui plante ne doit jamais faire planter la lecture
@@ -507,6 +571,7 @@ var console = { log:function(){}, warn:function(){}, error:function(){}, debug:f
 var global = this;
 var window = this;
 var self = this;
+var globalThis = this;
 var navigator = { userAgent: 'Mozilla/5.0 (Android)' };
 var location = { href: 'https://frunified.fr/', protocol: 'https:', hostname: 'frunified.fr', origin: 'https://frunified.fr' };
 var __timers = [];
@@ -570,6 +635,95 @@ Promise.race = function (arr) {
     for (var i = 0; i < ((arr && arr.length) || 0); i++) { Promise.resolve(arr[i]).then(res, rej); }
   });
 };
+Promise.allSettled = function (arr) {
+  arr = arr || [];
+  return new Promise(function (res) {
+    var out = [], n = arr.length, c = 0;
+    if (!n) { res(out); return; }
+    function done(i, v, settled) {
+      out[i] = settled ? { status: 'fulfilled', value: v } : { status: 'rejected', reason: v };
+      if (++c === n) res(out);
+    }
+    for (var i = 0; i < n; i++) {
+      (function (i) {
+        try { Promise.resolve(arr[i]).then(function (v) { done(i, v, true); }, function (e) { done(i, e, false); }); }
+        catch (e) { done(i, e, false); }
+      })(i);
+    }
+  });
+};
+Promise.any = function (arr) {
+  arr = arr || [];
+  return new Promise(function (res, rej) {
+    var errors = [], c = 0;
+    if (!arr.length) { rej(new Error('All promises were rejected')); return; }
+    for (var i = 0; i < arr.length; i++) {
+      (function (i) {
+        try { Promise.resolve(arr[i]).then(res, function (e) { errors[i] = e; if (++c === arr.length) rej(new Error('All promises were rejected')); }); }
+        catch (e) { errors[i] = e; if (++c === arr.length) rej(new Error('All promises were rejected')); }
+      })(i);
+    }
+  });
+};
+
+// ----- String.prototype.matchAll (retourne un vrai tableau : spreadable et .map/.concat utilisables)
+if (!String.prototype.matchAll) {
+  String.prototype.matchAll = function (re) {
+    var str = String(this);
+    var flags = '';
+    if (re) {
+      if (re.ignoreCase) flags += 'i';
+      if (re.multiline) flags += 'm';
+      if (re.dotAll) flags += 's';
+      if (re.unicode) flags += 'u';
+      if (re.sticky) flags += 'y';
+    }
+    var rx = (re && re.global) ? re : new RegExp(re ? re.source : String(re), 'g' + flags);
+    if (!rx.global && !rx.sticky) rx = new RegExp(rx.source, flags + 'g');
+    rx.lastIndex = 0;
+    var out = [];
+    var m;
+    while ((m = rx.exec(str)) !== null) {
+      out.push(m);
+      if (m.index === rx.lastIndex) rx.lastIndex++;
+    }
+    // supporte aussi l'usage en itérateur : it.next()
+    var idx = 0;
+    out.next = function () {
+      if (idx < out.length) return { value: out[idx++], done: false };
+      return { value: undefined, done: true };
+    };
+    return out;
+  };
+}
+
+// ----- Array.prototype.flatMap / flat (niveau 1, usage bundlé courant)
+if (!Array.prototype.flatMap) {
+  Array.prototype.flatMap = function (fn, thisArg) {
+    var out = [];
+    for (var i = 0; i < this.length; i++) {
+      if (!(i in this)) continue;
+      var v = fn.call(thisArg, this[i], i, this);
+      if (Array.isArray(v)) { for (var j = 0; j < v.length; j++) out.push(v[j]); }
+      else out.push(v);
+    }
+    return out;
+  };
+}
+if (!Array.prototype.flat) {
+  Array.prototype.flat = function (depth) {
+    var d = depth == null ? 1 : depth;
+    var out = [];
+    for (var i = 0; i < this.length; i++) {
+      var v = this[i];
+      if (Array.isArray(v) && d > 0) {
+        var sub = d === Infinity ? v.flat(Infinity) : v.flat(d - 1);
+        for (var j = 0; j < sub.length; j++) out.push(sub[j]);
+      } else out.push(v);
+    }
+    return out;
+  };
+}
 
 // ----- Réponse fetch
 function __makeResponse(status, text) {
@@ -675,6 +829,94 @@ function require(name) {
   }
   throw new Error('Module not supported: ' + name);
 }
+
+// ----- AbortController (signaux d'annulation fetch)
+function AbortSignal() {}
+AbortSignal.prototype.addEventListener = function (t, fn) {
+  if (t === 'abort') (this._listeners = this._listeners || []).push(fn);
+};
+AbortSignal.prototype.removeEventListener = function (t, fn) {
+  if (t === 'abort' && this._listeners) {
+    var i = this._listeners.indexOf(fn);
+    if (i >= 0) this._listeners.splice(i, 1);
+  }
+};
+AbortSignal.timeout = function (ms) {
+  var s = new AbortSignal();
+  s.aborted = false;
+  if (typeof setTimeout === 'function') {
+    setTimeout(function () { s.aborted = true; }, Number(ms) || 0);
+  }
+  return s;
+};
+AbortSignal.abort = function (reason) {
+  var s = new AbortSignal();
+  s.aborted = true;
+  s.reason = reason;
+  return s;
+};
+function AbortController() {
+  this.signal = new AbortSignal();
+  this.signal.aborted = false;
+}
+AbortController.prototype.abort = function (reason) {
+  var s = this.signal;
+  if (s.aborted) return;
+  s.aborted = true; s.reason = reason;
+  var ls = s._listeners || [];
+  s._listeners = [];
+  for (var i = 0; i < ls.length; i++) { try { ls[i](); } catch (e) {} }
+};
+
+// ----- URLSearchParams
+function URLSearchParams(init) {
+  this._m = {};
+  if (typeof init === 'string') {
+    var parts = init.replace(/^\?/, '').split('&');
+    for (var i = 0; i < parts.length; i++) {
+      if (!parts[i]) continue;
+      var kv = parts[i].split('=');
+      this._m[decodeURIComponent(kv[0].replace(/\+/g, ' '))] =
+        decodeURIComponent((kv[1] || '').replace(/\+/g, ' '));
+    }
+  }
+}
+URLSearchParams.prototype.get = function (k) { return this._m.hasOwnProperty(k) ? this._m[k] : null; };
+URLSearchParams.prototype.set = function (k, v) { this._m[k] = String(v); };
+URLSearchParams.prototype.append = function (k, v) {
+  var cur = this._m[k];
+  this._m[k] = cur == null ? String(v) : cur + ',' + v;
+};
+URLSearchParams.prototype.has = function (k) { return this._m.hasOwnProperty(k); };
+URLSearchParams.prototype.toString = function () {
+  var out = [];
+  for (var k in this._m) {
+    if (this._m.hasOwnProperty(k)) out.push(encodeURIComponent(k) + '=' + encodeURIComponent(this._m[k]));
+  }
+  return out.join('&');
+};
+
+// ----- Headers (objet simple, accepte objets et tableaux)
+function Headers(init) {
+  this._h = {};
+  if (init) {
+    var self = this;
+    if (typeof init.forEach === 'function') { init.forEach(function (v, k) { self._h[String(k).toLowerCase()] = String(v); }); }
+    else if (Array.isArray(init)) { for (var i = 0; i < init.length; i++) this._h[String(init[i][0]).toLowerCase()] = String(init[i][1]); }
+    else { for (var k in init) if (init.hasOwnProperty(k)) this._h[k.toLowerCase()] = String(init[k]); }
+  }
+}
+Headers.prototype.get = function (k) { return this._h.hasOwnProperty(k.toLowerCase()) ? this._h[k.toLowerCase()] : null; };
+Headers.prototype.set = function (k, v) { this._h[k.toLowerCase()] = String(v); };
+Headers.prototype.has = function (k) { return this._h.hasOwnProperty(k.toLowerCase()); };
+Headers.prototype.append = function (k, v) {
+  var key = k.toLowerCase();
+  this._h[key] = this._h.hasOwnProperty(key) ? this._h[key] + ', ' + v : String(v);
+};
+Headers.prototype.forEach = function (fn) { for (var k in this._h) if (this._h.hasOwnProperty(k)) fn(this._h[k], k); };
+
+// ----- queueMicrotask (exécution immédiate suffit avec nos promesses synchrones)
+function queueMicrotask(fn) { try { fn(); } catch (e) {} }
 
 // ----- divers
 var crypto = { getRandomValues: function (arr) { return arr; } };

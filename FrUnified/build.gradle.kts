@@ -1,4 +1,4 @@
-version = 3
+version = 4
 
 cloudstream {
     language = "fr"
@@ -15,8 +15,9 @@ cloudstream {
 
     description = "Catalogue unique FR (TMDB + AniList) : une seule extension qui agrège la recherche " +
         "et les liens de toutes les extensions françaises installées (French-Stream, Movix, Wiflix, " +
-        "FrenchAnime, Frembed, FSTV, Karma…). Supports : réglages ⚙️ (activation par serveur), addons " +
-        "Stremio (Torrentio, Comet, debrid), scrapeurs Nuvio (Gowaru, Phisher…), sous-titres et bandes-annonces."
+        "FrenchAnime, Frembed, FSTV, Karma…) et des scrapeurs Nuvio (Gowaru, z7kx, Phisher — engine " +
+        "Rhino patché, serveurs VF/1080 prioritaires, limite par source, dépôts installables et " +
+        "réglables ⚙️). Addons Stremio (Torrentio, Comet, debrid), sous-titres et bandes-annonces."
 
     tvTypes = listOf("Movie", "TvSeries", "Anime", "AnimeMovie", "Cartoon")
 

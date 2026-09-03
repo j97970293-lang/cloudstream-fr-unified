@@ -1,5 +1,6 @@
 package com.lagradost.frunified
 
+import android.util.Log
 import com.lagradost.cloudstream3.Actor
 import com.lagradost.cloudstream3.DubStatus
 import com.lagradost.cloudstream3.Episode
@@ -43,6 +44,8 @@ import org.json.JSONObject
  * installée, certaines de ces API n'existent pas et lèvent un NoSuchMethodError
  * qui ferait échouer tout le chargement de la fiche.
  */
+private const val LOG_TAG = "FrUnified"
+
 class FrUnifiedProvider : MainAPI() {
 
     override var mainUrl = "https://www.themoviedb.org"
@@ -511,7 +514,28 @@ class FrUnifiedProvider : MainAPI() {
         if (FrSettings.useNuvio) {
             linkJobs += async {
                 runCatching {
-                    withTimeoutOrNull(3 * 60_000L) { NuvioClient.streams(payload, callback) } ?: false
+                    val collected = java.util.concurrent.CopyOnWriteArrayList<ExtractorLink>()
+                    val ok = withTimeoutOrNull(3 * 60_000L) {
+                        NuvioClient.streams(payload) { collected += it }
+                    } ?: false
+
+                    // Serveurs prioritaires (VF, 1080, HD…) en tête de liste
+                    val patterns = FrSettings.nuvioPriorityPatterns
+                    val links: List<ExtractorLink> = if (patterns.isEmpty()) collected.toList() else {
+                        fun rank(l: ExtractorLink): Int {
+                            val name = l.name.uppercase()
+                            patterns.forEachIndexed { i, p -> if (name.contains(p)) return i }
+                            return patterns.size
+                        }
+                        collected.sortedBy { rank(it) } // tri stable
+                    }
+                    links.forEach(callback)
+
+                    // Diagnostic : ne jamais avaler une erreur sans trace
+                    NuvioClient.diagnostics().toSortedMap().forEach { (id, status) ->
+                        Log.i(LOG_TAG, "[Nuvio] $id → $status")
+                    }
+                    ok
                 }.getOrDefault(false)
             }
         }

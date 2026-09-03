@@ -1,0 +1,49 @@
+diff --git a/rhino/src/main/java/org/mozilla/javascript/Parser.java b/rhino/src/main/java/org/mozilla/javascript/Parser.java
+index de1de39..d22c83b 100644
+--- a/rhino/src/main/java/org/mozilla/javascript/Parser.java
++++ b/rhino/src/main/java/org/mozilla/javascript/Parser.java
+@@ -1364,9 +1364,10 @@ public class Parser {
+                 return pn;
+ 
+             case Token.RETURN:
+-            case Token.YIELD:
+                 pn = returnOrYield(tt, false);
+                 break;
++            // PATCH Nuvio : « yield » au niveau instruction est une ExpressionStatement
++            // ((yield a), b) conforme ES6 — on le laisse tomber sur le cas par défaut.
+ 
+             case Token.DEBUGGER:
+                 consumeToken();
+@@ -2152,7 +2153,10 @@ public class Parser {
+                 }
+             // fallthrough
+             default:
+-                e = expr(false);
++                // PATCH Nuvio : l'opérande de « yield » est une AssignmentExpression
++                // (jamais une Expression avec virgule). Sans ce patch,
++                // « let b = yield X, c = Y » est parsé « yield (X, c = Y) ».
++                e = tt == Token.YIELD ? assignExpr() : expr(false);
+                 end = getNodeEnd(e);
+         }
+ 
+@@ -2530,7 +2534,8 @@ public class Parser {
+             int opPos = ts.tokenBeg;
+             if (compilerEnv.isStrictMode() && !pn.hasSideEffects())
+                 addStrictWarning("msg.no.side.effects", "", pos, nodeEnd(pn) - pos);
+-            if (peekToken() == Token.YIELD) reportError("msg.yield.parenthesized");
++            // PATCH Nuvio : yield est autorisé en position d'argument/comma
++            // (JSON.parse(yield x) est valide ES6 ; Rhino exigeait des parenthèses)
+             if (allowTrailingComma && peekToken() == Token.RP) {
+                 pn.putIntProp(Node.TRAILING_COMMA, 1);
+                 return pn;
+@@ -2941,9 +2946,7 @@ public class Parser {
+                     // Quick fix to handle scenario like f1(a,); but not f1(a,b
+                     break;
+                 }
+-                if (peekToken() == Token.YIELD) {
+-                    reportError("msg.yield.parenthesized");
+-                }
++                // PATCH Nuvio : yield autorisé en argument (JSON.parse(yield x)…)
+                 AstNode en = assignExpr();
+                 if (peekToken() == Token.FOR) {
+                     try {
