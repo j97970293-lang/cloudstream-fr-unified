@@ -65,6 +65,9 @@ object NuvioClient {
     private val tmdbCache = ConcurrentHashMap<String, Pair<Long, Int?>>()
     @Volatile private var semaphore = Semaphore(NUVIO_CONCURRENCY)
 
+    /** Sémaphore des seuls TESTS (2 max) : ne bloque jamais la lecture réelle. */
+    private val testSemaphore = Semaphore(2)
+
     /** Re-crée le sémaphore si l'utilisateur a changé la concurrence. */
     private fun syncSemaphore() {
         val wanted = FrSettings.nuvioConcurrency
@@ -620,11 +623,10 @@ object NuvioClient {
             val links = java.util.concurrent.CopyOnWriteArrayList<ExtractorLink>()
             // Les tests partent TOUS en parallèle depuis l'écran de réglages ;
             // sur un réseau mobile, 26 moteurs Rhino simultanés saturaient tout
-            // et chaque scrapeur dépassait son timeout. On les sérialise via le
-            // même sémaphore que la lecture réelle (6 en parallèle max).
+            // et chaque scrapeur dépassait son timeout. Sémaphore dédié (2 max) :
+            // tests doux ET jamais bloquants pour la lecture réelle.
             val ok = runCatching {
-                syncSemaphore()
-                semaphore.withPermit {
+                testSemaphore.withPermit {
                     withTimeoutOrNull(150_000L) {
                         runScraper(scraper, tc.tmdbId, tc.type, tc.season, tc.episode, tc.payload) { links += it }
                     } ?: false
