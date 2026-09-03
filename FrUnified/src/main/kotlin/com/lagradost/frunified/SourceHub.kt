@@ -43,6 +43,10 @@ object SourceHub {
     private val matchCache = ConcurrentHashMap<String, Pair<Long, String?>>()
     private const val MATCH_TTL_MS = 30 * 60 * 1000L
 
+    /** Dernier verdict par source (nom -> « ✓ 3 liens » ou « ✗ raison »). */
+    private val lastErrors = ConcurrentHashMap<String, String>()
+    fun diagnostics(): Map<String, String> = lastErrors.toMap()
+
     // ------------------------------------------------------- découverte
 
     /** Lit `APIHolder.apis` / `APIHolder.allProviders` sans dépendre de leur type. */
@@ -273,14 +277,26 @@ object SourceHub {
         payload: PlayPayload,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
-    ): Boolean {
-        val url = locate(api, payload) ?: return false
+    ): Boolean = try {
+        val url = locate(api, payload)
+        if (url == null) {
+            lastErrors[api.name] = "✗ fiche introuvable (recherche/ID)"
+            return false
+        }
 
         val response = withTimeoutOrNull(LOAD_TIMEOUT_MS) {
             runCatching { api.load(url) }.getOrNull()
-        } ?: return false
+        }
+        if (response == null) {
+            lastErrors[api.name] = "✗ chargement de la fiche impossible"
+            return false
+        }
 
-        val data = pickData(response, payload) ?: return false
+        val data = pickData(response, payload)
+        if (data == null) {
+            lastErrors[api.name] = "✗ aucun lecteur/épisode trouvé"
+            return false
+        }
 
         var emitted = false
         val tagged: (ExtractorLink) -> Unit = { link ->
@@ -289,7 +305,34 @@ object SourceHub {
         }
 
         runCatching { api.loadLinks(data, false, subtitleCallback, tagged) }
-        return emitted
+        lastErrors[api.name] = if (emitted) "✓ lien(s) émis" else "✓ 0 lien"
+        emitted
+    } catch (t: Throwable) {
+        lastErrors[api.name] = "✗ " + (t.message?.take(80) ?: t::class.simpleName.orEmpty())
+        false
+    }
+
+    /**
+     * Test rapide d'UNE extension (bouton « Tester » des réglages) :
+     * parcourt le même chemin que loadLinks sur Fight Club (TMDB 550).
+     */
+    suspend fun testSource(name: String): String {
+        val api = detectedSources().firstOrNull { it.name == name } ?: return "✗ extension introuvable"
+        val payload = PlayPayload(
+            kind = "movie",
+            titles = listOf("Fight Club"),
+            year = 1999,
+            tmdbId = 550,
+            imdbId = "tt0137523"
+        )
+        val links = java.util.concurrent.CopyOnWriteArrayList<ExtractorLink>()
+        val ok = runCatching {
+            withTimeoutOrNull(60_000L) {
+                linksFrom(api, payload, {}, { links += it })
+            } ?: false
+        }.getOrDefault(false)
+        return if (ok) "✓ ${links.size} lien(s) : " + links.take(3).joinToString(", ") { it.name.take(28) }
+        else (diagnostics()[api.name] ?: "✗ aucun résultat")
     }
 
     /** Préfixe le lien par le nom de la source pour rester lisible dans le lecteur. */

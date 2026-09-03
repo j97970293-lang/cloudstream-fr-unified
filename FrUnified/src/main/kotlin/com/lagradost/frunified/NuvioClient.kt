@@ -66,7 +66,13 @@ object NuvioClient {
 
     private val manifestCache = ConcurrentHashMap<String, Pair<Long, List<NuvioScraper>>>()
     private val tmdbCache = ConcurrentHashMap<String, Pair<Long, Int?>>()
-    private val semaphore = Semaphore(NUVIO_CONCURRENCY)
+    @Volatile private var semaphore = Semaphore(NUVIO_CONCURRENCY)
+
+    /** Re-crée le sémaphore si l'utilisateur a changé la concurrence. */
+    private fun syncSemaphore() {
+        val wanted = FrSettings.nuvioConcurrency
+        if (semaphore.availablePermits != wanted) semaphore = Semaphore(wanted)
+    }
 
     /** Résultats du dernier passage (id scrapeur -> « ✓ 12 liens » ou « ✗ raison »). */
     private val lastResults = ConcurrentHashMap<String, String>()
@@ -183,6 +189,7 @@ object NuvioClient {
     suspend fun streams(payload: PlayPayload, callback: (ExtractorLink) -> Unit): Boolean {
         if (!FrSettings.useNuvio) return false
         lastResults.clear()
+        syncSemaphore()
 
         val tmdbId = tmdbId(payload) ?: return false
         val all = scrapers()
@@ -237,6 +244,7 @@ object NuvioClient {
             // et les bundles transpilés (babel) échouent en « Cannot find function apply ».
             val scope = cx.initStandardObjects(org.mozilla.javascript.TopLevel())
             cx.evaluateString(scope, JS_ENV, "prelude", 1, null)
+            injectEnv(scope)
 
             // module.exports / global.getStreams : les deux formats de sortie
             val module = cx.newObject(scope)
@@ -512,6 +520,39 @@ object NuvioClient {
 
     // ------------------------------------------------------ fonctions JS
 
+    /** Injecte les clés API de l'utilisateur dans process.env (lu par les bundles). */
+    private fun injectEnv(scope: Scriptable) {
+        runCatching {
+            val process = scope.get("process", scope) as? Scriptable ?: return
+            val env = ScriptableObject.getProperty(process, "env") as? Scriptable ?: return
+            FrSettings.apiTokens.forEach { (k, v) ->
+                env.put(k, env, v)
+            }
+        }
+    }
+
+    /**
+     * Test rapide d'UN scrapeur (bouton « Tester » des réglages) :
+     * exécute son getStreams sur Fight Club (TMDB 550) et retourne le verdict.
+     */
+    suspend fun testProvider(id: String): String {
+        val scraper = runCatching { scrapers().firstOrNull { it.id == id } }.getOrNull()
+            ?: return "✗ source introuvable"
+        val payload = PlayPayload(
+            kind = "movie",
+            titles = listOf("Fight Club"),
+            year = 1999,
+            tmdbId = 550
+        )
+        val links = java.util.concurrent.CopyOnWriteArrayList<ExtractorLink>()
+        val ok = runCatching {
+            withTimeoutOrNull(90_000L) {
+                runScraper(scraper, 550, "movie", 0, 0, payload) { links += it }
+            } ?: false
+        }.getOrDefault(false)
+        return if (ok) "✓ ${links.size} serveur(s)" else "✗ " + (diagnostics()[scraper.id] ?: "aucun résultat")
+    }
+
     private class FetchFunction : BaseFunction() {
         @Suppress("DEPRECATION")
         override fun call(cx: RhinoContext, scope: Scriptable, thisObj: Scriptable?, args: Array<Any>): Any? {
@@ -524,6 +565,13 @@ object NuvioClient {
             }.getOrNull())?.uppercase() ?: "GET"
 
             val headerMap = linkedMapOf<String, String>()
+            // En-têtes « contournement Cloudflare » par défaut (réglages ⚙️),
+            // les en-têtes fournis par le bundle priment.
+            runCatching {
+                if (FrSettings.nuvioUserAgent.isNotBlank()) headerMap["User-Agent"] = FrSettings.nuvioUserAgent
+                if (FrSettings.nuvioReferer.isNotBlank()) headerMap["Referer"] = FrSettings.nuvioReferer
+                if (FrSettings.nuvioCookies.isNotBlank()) headerMap["Cookie"] = FrSettings.nuvioCookies
+            }
             runCatching {
                 val headersObj = ScriptableObject.getProperty(opts, "headers")
                 if (headersObj is Scriptable) {
@@ -572,6 +620,7 @@ var global = this;
 var window = this;
 var self = this;
 var globalThis = this;
+var process = { env: {} };
 var navigator = { userAgent: 'Mozilla/5.0 (Android)' };
 var location = { href: 'https://frunified.fr/', protocol: 'https:', hostname: 'frunified.fr', origin: 'https://frunified.fr' };
 var __timers = [];

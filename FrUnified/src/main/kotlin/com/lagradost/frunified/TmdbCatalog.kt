@@ -31,7 +31,7 @@ object TmdbCatalog {
     private const val IMG = "https://image.tmdb.org/t/p"
 
     /** Clé publique communautaire (v3), la même que celle utilisée par les addons FR existants. */
-    private const val API_KEY = "f3d757824f08ea2cff45eb8f47ca3a1e"
+    private val API_KEY: String get() = FrSettings.tmdbApiKey
 
     private const val CACHE_TTL = 15 * 60 * 1000L
     private val cache = ConcurrentHashMap<String, Pair<Long, JSONObject>>()

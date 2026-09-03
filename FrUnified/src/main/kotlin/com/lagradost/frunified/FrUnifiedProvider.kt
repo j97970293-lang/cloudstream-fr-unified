@@ -109,8 +109,14 @@ class FrUnifiedProvider : MainAPI() {
     override suspend fun quickSearch(query: String): List<SearchResponse> = search(query)
 
     override suspend fun search(query: String): List<SearchResponse> = coroutineScope {
-        val tmdb = async { runCatching { TmdbCatalog.search(query) }.getOrDefault(emptyList()) }
-        val anime = async { runCatching { AnimeCatalog.search(query) }.getOrDefault(emptyList()) }
+        val tmdb = async {
+            if (FrSettings.useTmdbCatalog) runCatching { TmdbCatalog.search(query) }.getOrDefault(emptyList())
+            else emptyList()
+        }
+        val anime = async {
+            if (FrSettings.useAnimeCatalog) runCatching { AnimeCatalog.search(query) }.getOrDefault(emptyList())
+            else emptyList()
+        }
 
         val tmdbItems = tmdb.await()
         val seen = tmdbItems.map { TitleMatch.normalize(it.title) }.toMutableSet()

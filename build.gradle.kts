@@ -12,7 +12,7 @@ buildscript {
 
     dependencies {
         classpath("com.android.tools.build:gradle:8.7.3")
-        classpath("com.github.recloudstream:gradle:-SNAPSHOT")
+        classpath("com.github.recloudstream.gradle:gradle:32895ae")
         classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.3.0")
     }
 }
@@ -89,6 +89,25 @@ subprojects {
         // + compat Android (API Java 9+ remplacées). Source : mozilla/rhino tag Rhino1_9_1_Release.
         implementation(files("libs/rhino-nuvio-1.9.1.jar"))
         coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
+    }
+
+    // ------------------------------------------------------------------
+    // CRUCIAL : le tâche compileDex du plugin CloudStream ne déxe QUE la
+    // sortie de compileDebugKotlin — les jars de libs/ ne sont JAMAIS
+    // embarqués (cause du « 0 serveur Nuvio » : NoClassDefFoundError
+    // sur org.mozilla.javascript.*). On extrait donc les classes du jar
+    // Rhino et on les ajoute aux entrées de compileDex.
+    // ------------------------------------------------------------------
+    val extractRhino by tasks.registering(Copy::class) {
+        from(zipTree(project.file("libs/rhino-embed-1.9.1.jar")))
+        into(layout.buildDirectory.dir("rhino-classes"))
+        duplicatesStrategy = DuplicatesStrategy.INCLUDE
+    }
+    afterEvaluate {
+        tasks.withType<com.lagradost.cloudstream3.gradle.tasks.CompileDexTask>().configureEach {
+            dependsOn(extractRhino)
+            input.from(layout.buildDirectory.dir("rhino-classes"))
+        }
     }
 }
 

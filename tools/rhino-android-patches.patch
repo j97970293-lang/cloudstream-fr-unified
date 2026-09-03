@@ -1,0 +1,89 @@
+diff --git a/rhino/src/main/java/org/mozilla/javascript/NativeCollectionIterator.java b/rhino/src/main/java/org/mozilla/javascript/NativeCollectionIterator.java
+index a4f6b6f..947488c 100644
+--- a/rhino/src/main/java/org/mozilla/javascript/NativeCollectionIterator.java
++++ b/rhino/src/main/java/org/mozilla/javascript/NativeCollectionIterator.java
+@@ -10,7 +10,7 @@ public class NativeCollectionIterator extends ES6Iterator {
+     private static final long serialVersionUID = 7094840979404373443L;
+     private String className;
+     private Type type;
+-    private transient Iterator<Hashtable.Entry> iterator = Collections.emptyIterator();
++    private transient Iterator<Hashtable.Entry> iterator = Collections.<Hashtable.Entry>emptyList().iterator();
+ 
+     enum Type {
+         KEYS,
+@@ -24,7 +24,7 @@ public class NativeCollectionIterator extends ES6Iterator {
+ 
+     public NativeCollectionIterator(String tag) {
+         this.className = tag;
+-        this.iterator = Collections.emptyIterator();
++        this.iterator = Collections.<Hashtable.Entry>emptyList().iterator();
+         this.type = Type.BOTH;
+     }
+ 
+@@ -65,7 +65,7 @@ public class NativeCollectionIterator extends ES6Iterator {
+         stream.defaultReadObject();
+         className = (String) stream.readObject();
+         type = (Type) stream.readObject();
+-        iterator = Collections.emptyIterator();
++        iterator = Collections.<Hashtable.Entry>emptyList().iterator();
+     }
+ 
+     private void writeObject(ObjectOutputStream stream) throws IOException {
+diff --git a/rhino/src/main/java/org/mozilla/javascript/SlotMapOwner.java b/rhino/src/main/java/org/mozilla/javascript/SlotMapOwner.java
+index aebb932..092ae70 100644
+--- a/rhino/src/main/java/org/mozilla/javascript/SlotMapOwner.java
++++ b/rhino/src/main/java/org/mozilla/javascript/SlotMapOwner.java
+@@ -1,7 +1,5 @@
+ package org.mozilla.javascript;
+ 
+-import java.lang.invoke.MethodHandles;
+-import java.lang.invoke.VarHandle;
+ import java.util.Collections;
+ import java.util.Iterator;
+ import java.util.NoSuchElementException;
+@@ -21,24 +19,21 @@ public abstract class SlotMapOwner {
+ 
+     static final SlotMap THREAD_SAFE_EMPTY_SLOT_MAP = new ThreadSafeEmptySlotMap();
+ 
+-    @SuppressWarnings("AndroidJdkLibsChecker")
+-    // https://developer.android.com/reference/java/lang/invoke/VarHandle added in API level 33
+-    // Note: Due presence of this class, dexing of rhino will not be possible for APIs < 26
++    // Patch local (FR-Unified) : VarHandle/MethodHandles (Java 9+) ne sont pas
++    // déxables pour un minSdk < 26 sous D8. On remplace par un échange sous
++    // verrou, sémantiquement identique à compareAndExchange (retourne la valeur
++    // effectivement présente : oldMap si l'échange a eu lieu, sinon la valeur
++    // concurrente).
+     static final class ThreadedAccess {
+ 
+-        private static final VarHandle SLOT_MAP = getSlotMapHandle();
+-
+-        private static VarHandle getSlotMapHandle() {
+-            try {
+-                return MethodHandles.lookup()
+-                        .findVarHandle(SlotMapOwner.class, "slotMap", SlotMap.class);
+-            } catch (NoSuchFieldException | IllegalAccessException e) {
+-                throw new Error(e);
+-            }
+-        }
+-
+         static SlotMap checkAndReplaceMap(SlotMapOwner owner, SlotMap oldMap, SlotMap newMap) {
+-            return (SlotMap) SLOT_MAP.compareAndExchange(owner, oldMap, newMap);
++            synchronized (owner) {
++                if (owner.slotMap == oldMap) {
++                    owner.slotMap = newMap;
++                    return oldMap;
++                }
++                return owner.slotMap;
++            }
+         }
+     }
+ 
+@@ -46,7 +41,7 @@ public abstract class SlotMapOwner {
+ 
+         @Override
+         public Iterator<Slot> iterator() {
+-            return Collections.emptyIterator();
++            return Collections.<Slot>emptyList().iterator();
+         }
+ 
+         @Override
