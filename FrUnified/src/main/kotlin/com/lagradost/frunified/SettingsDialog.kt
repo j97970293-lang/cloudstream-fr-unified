@@ -292,6 +292,19 @@ object SettingsDialog {
         sScraping.addToBody(stremioSwitch)
         sScraping.addToBody(nuvioSwitch)
         sScraping.addToBody(nuvioAllSwitch)
+        // Bandeau de diagnostic : indique immédiatement si le moteur JavaScript
+        // tourne sur cet appareil (RegExp + messages Rhino) ou pourquoi il échoue.
+        val engineBanner = TextView(context).label(context,
+            "Moteur Rhino : test en cours…", 12f, p.sub)
+        sScraping.addToBody(engineBanner)
+        GlobalScope.launch {
+            val status = runCatching { NuvioClient.engineStatus() }
+                .getOrElse { t -> "✗ moteur : " + (t.message?.take(120) ?: t::class.simpleName.orEmpty()) }
+            withContext(Dispatchers.Main) {
+                engineBanner.text = status
+                engineBanner.setTextColor(if (status.startsWith("✓")) p.ok else p.err)
+            }
+        }
         sScraping.addToBody(subsSwitch)
         sScraping.addToBody(TextView(context).label(context,
             "Sources lancées en parallèle (1–12)", 12f, p.sub).apply { setPadding(0, context.dp(10), 0, context.dp(2)) })
