@@ -42,7 +42,7 @@ object NuvioClient {
     private const val SCRAPER_TIMEOUT_MS = 90_000L
     private const val NUVIO_CONCURRENCY = 6
 
-    private const val NETWORK_TIMEOUT_MS = 20_000
+    private const val NETWORK_TIMEOUT_MS = 30_000
 
     data class NuvioScraper(
         val id: String,
@@ -546,7 +546,7 @@ object NuvioClient {
         try {
             conn.requestMethod = method.uppercase()
             conn.connectTimeout = NETWORK_TIMEOUT_MS
-            conn.readTimeout = NETWORK_TIMEOUT_MS * 2
+            conn.readTimeout = 90_000
             conn.instanceFollowRedirects = true
             conn.setRequestProperty(
                 "User-Agent",
