@@ -42,9 +42,6 @@ object NuvioClient {
     private const val SCRAPER_TIMEOUT_MS = 60_000L
     private const val NUVIO_CONCURRENCY = 6
 
-    /** « f.push(...x) » → « f.push.apply(f, x) » (Rhino ne parse pas le spread d'appel). */
-    private val SPREAD_CALL = Regex("([A-Za-z_$][\\w$]*)\\.push\\(\\.\\.\\.([A-Za-z_$][\\w$.\\[\\]]*)\\)")
-
     private const val NETWORK_TIMEOUT_MS = 20_000
 
     data class NuvioScraper(
@@ -83,7 +80,7 @@ object NuvioClient {
 
     fun init(context: Context) {
         if (cacheDir == null) {
-            cacheDir = runCatching { File(context.filesDir, "nuvio").apply { mkdirs() } }.getOrNull()
+            cacheDir = runCatching { File(context.filesDir, "nuvio-v7").apply { mkdirs() } }.getOrNull()
         }
     }
 
@@ -162,27 +159,13 @@ object NuvioClient {
         val fresh = file?.takeIf { it.exists() && System.currentTimeMillis() - it.lastModified() < SCRIPT_TTL_MS }
         if (fresh != null) {
             val cached = runCatching { fresh.readText() }.getOrNull()
-            if (!cached.isNullOrBlank()) return normalizeBundle(cached)
+            if (!cached.isNullOrBlank()) return cached
         }
         val code = runCatching {
             withContext(Dispatchers.IO) { httpGet(scraper.scriptUrl, emptyMap()) }
         }.getOrNull()?.takeIf { it.isNotBlank() }
         if (code != null) runCatching { file?.writeText(code) }
-        return code?.let { normalizeBundle(it) }
-    }
-
-    /**
-     * Adapte un bundle webpack aux limitations du parseur Rhino :
-     *  - « f.push(...liste) » (spread en argument d'appel) n'est pas supporté
-     *    par Rhino → transformé en « f.push.apply(f, liste) ».
-     * (Le reste — générateurs, for-of, spread de tableaux — est géré nativement
-     * par le Rhino 1.9.1 de NuvioClient, avec TopLevel + patch yield-en-argument.)
-     */
-    private fun normalizeBundle(code: String): String {
-        if (code.indexOf("...") < 0) return code
-        return SPREAD_CALL.replace(code) { m ->
-            "${m.groupValues[1]}.push.apply(${m.groupValues[1]}, ${m.groupValues[2]})"
-        }
+        return code
     }
 
     /** Exécute tous les scrapeurs activés et relaie leurs flux. */
@@ -261,7 +244,7 @@ object NuvioClient {
             try {
                 cx.evaluateString(scope, code, scraper.id, 1, null)
             } catch (t: Throwable) {
-                lastResults[scraper.id] = "✗ erreur JS : " + (t.message?.take(80) ?: t::class.simpleName.orEmpty())
+                lastResults[scraper.id] = "✗ erreur JS : " + jsError(code, t)
                 return@withContext false
             }
 
@@ -289,7 +272,7 @@ object NuvioClient {
             var result: Any? = try {
                 (fn as org.mozilla.javascript.Callable).call(cx, scope, scope, args)
             } catch (t: Throwable) {
-                lastResults[scraper.id] = "✗ appel : " + (t.message?.take(80) ?: t::class.simpleName.orEmpty())
+                lastResults[scraper.id] = "✗ appel : " + jsError(code, t)
                 return@withContext false
             }
 
@@ -454,19 +437,49 @@ object NuvioClient {
 
     // ------------------------------------------------- ID TMDB (animé)
 
-    /** TMDB est nécessaire pour les scrapeurs Nuvio ; retrouvé par recherche si absent. */
+    /**
+     * TMDB est nécessaire pour les scrapeurs Nuvio (métadonnées/alias des titres).
+     * Retrouvé par recherche si absent — on essaie TOUS les titres connus de la
+     * fiche (titres FR, originaux, romaji, alternatifs) car les fiches
+     * AniList/MAL (non-TMDB) n'ont pas d'id TMDB : c'est ce qui permet aux
+     * scrapeurs anime de recevoir un id exploitable.
+     */
     private suspend fun tmdbId(payload: PlayPayload): Int? {
         payload.tmdbId?.let { return it }
-        val key = "${payload.primaryTitle}|${payload.year}"
         val now = System.currentTimeMillis()
-        tmdbCache[key]?.let { (expiry, id) -> if (expiry > now) return id }
+        var best: Pair<Double, Int>? = null
+        for (title in payload.titles.take(6)) {
+            val key = "$title|${payload.year}"
+            val cachedHit = tmdbCache[key]
+            if (cachedHit != null && cachedHit.first > now) {
+                cachedHit.second?.let { return it }
+                continue
+            }
+            val found = runCatching {
+                TmdbCatalog.searchBest(title, payload.year)?.let { item ->
+                    val id = item.id.id.toIntOrNull()
+                    if (id != null) {
+                        val score = TitleMatch.score(payload.titles, item.title, payload.year, item.year)
+                        score to id
+                    } else null
+                }
+            }.getOrNull()
+            tmdbCache[key] = (now + SCRIPT_TTL_MS) to found?.second
+            if (found != null && (best == null || found.first > best!!.first)) best = found
+        }
+        return best?.second
+    }
 
-        val found = runCatching {
-            TmdbCatalog.searchBest(payload.primaryTitle, payload.year)?.id?.id?.toIntOrNull()
-        }.getOrNull()
-
-        tmdbCache[key] = (now + SCRIPT_TTL_MS) to found
-        return found
+    /** Format d'erreur autoportant : classe + message + ligne fautive + extrait du code. */
+    private fun jsError(code: String, t: Throwable): String {
+        val cls = t::class.simpleName.orEmpty()
+        val msg = (t.message ?: "").replace("\n", " ").take(90)
+        val line = (t as? org.mozilla.javascript.RhinoException)?.lineNumber() ?: -1
+        val snippet = if (line > 0) {
+            code.lineSequence().elementAtOrNull(line - 1)?.trim()?.take(110)
+                ?.let { " | l${line}: $it" }.orEmpty()
+        } else ""
+        return "$cls: $msg$snippet"
     }
 
     // ------------------------------------------------------- réseau

@@ -2,6 +2,7 @@ package com.lagradost.frunified
 
 import com.lagradost.cloudstream3.APIHolder
 import com.lagradost.cloudstream3.AnimeLoadResponse
+import com.lagradost.cloudstream3.AnimeSearchResponse
 import com.lagradost.cloudstream3.DubStatus
 import com.lagradost.cloudstream3.Episode
 import com.lagradost.cloudstream3.LoadResponse
@@ -33,9 +34,6 @@ object SourceHub {
     private const val SEARCH_TIMEOUT_MS = 20_000L
     private const val LOAD_TIMEOUT_MS = 25_000L
     private const val LINKS_TIMEOUT_MS = 45_000L
-
-    /** Langues considérées comme « francophones ». */
-    private val FRENCH_LANGS = setOf("fr", "fr-fr", "fra", "french")
 
     /** Sources à ignorer (méta-providers, doublons, agrégateurs). */
     private val BLACKLIST = setOf(FrUnifiedProvider.PROVIDER_NAME, "Multi", "MultiFR")
@@ -78,7 +76,7 @@ object SourceHub {
             .distinctBy { it.name }
             .filter { api ->
                 api.name !in BLACKLIST &&
-                    runCatching { api.lang.lowercase() in FRENCH_LANGS }.getOrDefault(false)
+                    runCatching { api.lang.lowercase().startsWith("fr") }.getOrDefault(false)
             }
             .sortedBy { it.name.lowercase() }
     }.getOrDefault(emptyList())
@@ -154,6 +152,7 @@ object SourceHub {
                 val candidateYear = when (result) {
                     is MovieSearchResponse -> result.year
                     is TvSeriesSearchResponse -> result.year
+                    is AnimeSearchResponse -> result.year   // fiches anime : structure différente
                     else -> null
                 }
                 val score = TitleMatch.score(
