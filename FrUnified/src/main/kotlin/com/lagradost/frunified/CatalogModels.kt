@@ -9,19 +9,71 @@ import org.json.JSONObject
  * (TMDB pour films/séries, AniList pour l'animé). Un [CatalogId] encode la
  * provenance du catalogue, jamais la source de streaming : les sources sont
  * résolues à la volée au moment de la lecture.
+ *
+ * IMPORTANT : [serialize] produit une vraie URL http. CloudStream applique
+ * `fixUrl()` aux URLs des fiches ; un identifiant « tmdb:movie:123 » était
+ * transformé en « NONE/tmdb:movie:123 » et `load()` ne le reconnaissait pas
+ * (→ « Error loading, try again later. »). Une URL http n'est jamais modifiée.
  */
 data class CatalogId(
-    val catalog: String, // "tmdb" | "anilist"
+    val catalog: String, // "tmdb" | "anilist" | "mal"
     val kind: String,    // "movie" | "tv" | "anime"
     val id: String
 ) {
-    fun serialize(): String = "$catalog:$kind:$id"
+    fun serialize(): String = "https://frunified.fr/$catalog/$kind/$id"
 
     companion object {
-        fun parse(raw: String): CatalogId? {
-            val parts = raw.substringAfter("frunified://").split(":")
+        private val CATALOGS = setOf("tmdb", "anilist", "mal")
+
+        private fun normalizeKind(kind: String): String = when (kind.lowercase()) {
+            "film", "movie", "movies" -> "movie"
+            "series", "serie", "serie", "show", "shows", "tvseries" -> "tv"
+            "anime", "animes" -> "anime"
+            else -> kind.lowercase()
+        }
+
+        /**
+         * Comprend tous les formats :
+         *  - https://frunified.fr/tmdb/movie/860508        (format actuel)
+         *  - tmdb:movie:860508                             (v1/v2, cassé par fixUrl)
+         *  - frunified://tmdb:movie:860508
+         *  - /tmdb:movie:860508, NONE/tmdb:movie:860508    (versions « fixées »)
+         */
+        fun parse(raw: String?): CatalogId? {
+            if (raw.isNullOrBlank()) return null
+            var path = raw.trim()
+
+            // Enlève le schéma (https://, frunified://, stremio://…)
+            val schemeIdx = path.indexOf("://")
+            if (schemeIdx >= 0) {
+                path = path.substring(schemeIdx + 3)
+                // Enlève l'hôte s'il y en a un (https://frunified.fr/tmdb/movie/1)
+                val slash = path.indexOf('/')
+                path = if (slash >= 0) path.substring(slash + 1) else path
+            }
+
+            // Enlève les préfixes parasites (« NONE/ », « / », « tmdb.org/ »…)
+            path = path.trimStart('/')
+            path = path.substringAfterLast("frunified/", path)
+            path = path.substringAfterLast("themoviedb.org/", path)
+
+            val parts = if (path.contains(":")) path.split(":") else path.split("/")
             if (parts.size < 3) return null
-            return CatalogId(parts[0], parts[1], parts.drop(2).joinToString(":"))
+
+            var catalog = parts[0].trim().lowercase()
+            if (catalog !in CATALOGS) {
+                // Dernier recours : un préfixe inconnu (« NONE/ », « / »…) devant « tmdb:… »
+                catalog = catalog.substringAfterLast('/').trim()
+                if (catalog !in CATALOGS) {
+                    val known = parts.firstOrNull { it.substringAfterLast('/').trim().lowercase() in CATALOGS }
+                        ?: return null
+                    catalog = known.substringAfterLast('/').trim().lowercase()
+                }
+            }
+            val kind = normalizeKind(parts[1])
+            val id = parts.drop(2).joinToString(":").trim()
+            if (id.isBlank()) return null
+            return CatalogId(catalog, kind, id)
         }
     }
 }

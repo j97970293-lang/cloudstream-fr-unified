@@ -79,6 +79,11 @@ subprojects {
         compileOnly("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
         implementation("com.github.Blatzar:NiceHttp:0.4.11")
         implementation("org.jsoup:jsoup:1.18.3")
+
+        // Moteur JavaScript pour les scrapeurs Nuvio (Gowaru, Phisher…)
+        // Rhino 1.9.1 patché lokalement : yield non parenthésé en argument + call-spread
+        // + compat Android (API Java 9+ remplacées). Source : mozilla/rhino tag Rhino1_9_1_Release.
+        implementation(files("libs/rhino-nuvio-1.9.1.jar"))
     }
 }
 

@@ -27,6 +27,7 @@ import com.lagradost.cloudstream3.newMovieSearchResponse
 import com.lagradost.cloudstream3.newTvSeriesLoadResponse
 import com.lagradost.cloudstream3.newTvSeriesSearchResponse
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -118,13 +119,33 @@ class FrUnifiedProvider : MainAPI() {
     // ------------------------------------------------------------------ fiche
 
     override suspend fun load(url: String): LoadResponse? {
-        val id = CatalogId.parse(url) ?: return null
-        return when (id.catalog) {
-            "anilist" -> loadAnime(id)
-            "mal" -> loadMalAnime(id)
-            else -> loadTmdb(id)
+        val id = CatalogId.parse(url)
+        if (id == null) {
+            // Fiche « diagnostic » plutôt qu'un écran d'erreur aveugle.
+            return errorResponse("Adresse non reconnue : « ${url.take(140)} »", url)
+        }
+        return try {
+            when (id.catalog) {
+                "anilist" -> loadAnime(id)
+                "mal" -> loadMalAnime(id)
+                else -> loadTmdb(id)
+            }
+        } catch (c: CancellationException) {
+            throw c
+        } catch (t: Throwable) {
+            errorResponse(
+                "Erreur interne FR Unifié : ${t::class.simpleName ?: t.javaClass.simpleName} — " +
+                    (t.message?.take(240) ?: "détail inconnu"),
+                url
+            )
         }
     }
+
+    private suspend fun errorResponse(message: String, url: String): LoadResponse? = runCatching {
+        newMovieLoadResponse("FR Unifié — diagnostic", url, TvType.Movie, "{}") {
+            this.plot = message
+        }
+    }.getOrNull()
 
     private fun describe(overview: String?): String = buildString {
         overview?.let { append(it).append("\n\n") }
@@ -211,9 +232,35 @@ class FrUnifiedProvider : MainAPI() {
             }
         }.getOrNull().orEmpty().ifEmpty { listOf(1) }
 
+        // Numérotation absolue (ép. 1..N toutes saisons confondues) : les sites
+        // d'animés/séries qui comptent en absolu retrouvent ainsi le bon épisode.
+        val episodeCounts = runCatching {
+            details.optJSONArray("seasons")?.let { seasons ->
+                buildMap {
+                    (0 until seasons.length()).forEach { i ->
+                        val s = seasons.optJSONObject(i) ?: return@forEach
+                        val n = s.optInt("season_number")
+                        val c = s.optInt("episode_count")
+                        if (n >= 0 && c > 0) this[n] = c
+                    }
+                }
+            }
+        }.getOrNull().orEmpty()
+
+        val offsets = mutableMapOf<Int, Int>()
+        var running = 0
+        for (n in seasonNumbers.sorted()) {
+            offsets[n] = running
+            running += episodeCounts[n] ?: 0
+        }
+
         val episodes = coroutineScope {
             seasonNumbers.take(40).map { seasonNumber ->
-                async { runCatching { buildSeason(id, seasonNumber, titles, item.year, imdbId) }.getOrDefault(emptyList()) }
+                async {
+                    runCatching {
+                        buildSeason(id, seasonNumber, titles, item.year, imdbId, offsets[seasonNumber])
+                    }.getOrDefault(emptyList())
+                }
             }.awaitAll().flatten()
         }
 
@@ -261,7 +308,8 @@ class FrUnifiedProvider : MainAPI() {
         seasonNumber: Int,
         titles: List<String>,
         year: Int?,
-        imdbId: String?
+        imdbId: String?,
+        absoluteOffset: Int? = null
     ): List<Episode> {
         val season = TmdbCatalog.season(id.id, seasonNumber) ?: return emptyList()
         val list = season.optJSONArray("episodes") ?: return emptyList()
@@ -276,6 +324,7 @@ class FrUnifiedProvider : MainAPI() {
                 year = year,
                 season = seasonNumber,
                 episode = episodeNumber,
+                absoluteEpisode = absoluteOffset?.let { it + episodeNumber },
                 tmdbId = id.id.toIntOrNull(),
                 imdbId = imdbId
             )
@@ -458,7 +507,16 @@ class FrUnifiedProvider : MainAPI() {
             }
         }
 
-        // 3. Sous-titres externes (n'entrent pas dans le décompte des liens)
+        // 3. Scrapeurs Nuvio (plugins locaux du projet Nuvio : Gowaru FR…)
+        if (FrSettings.useNuvio) {
+            linkJobs += async {
+                runCatching {
+                    withTimeoutOrNull(3 * 60_000L) { NuvioClient.streams(payload, callback) } ?: false
+                }.getOrDefault(false)
+            }
+        }
+
+        // 4. Sous-titres externes (n'entrent pas dans le décompte des liens)
         if (FrSettings.useSubtitles) {
             (FrSettings.stremioUrls + FrSettings.DEFAULT_SUBTITLE_ADDON).distinct().forEach { addon ->
                 sideJobs += async {

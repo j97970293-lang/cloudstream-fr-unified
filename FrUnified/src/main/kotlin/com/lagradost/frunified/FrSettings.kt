@@ -18,9 +18,19 @@ object FrSettings {
     private const val KEY_USE_STREMIO = "use_stremio"
     private const val KEY_USE_SUBS = "use_subtitles"
     private const val KEY_SUB_LANGS = "subtitle_langs"
+    private const val KEY_USE_NUVIO = "use_nuvio"
+    private const val KEY_NUVIO_REPOS = "nuvio_repos"
+    private const val KEY_NUVIO_DISABLED = "nuvio_disabled"
+    private const val KEY_NUVIO_ALL = "nuvio_all_langs"
 
     /** Addon de sous-titres Stremio gratuit et sans clé, activé par défaut. */
     const val DEFAULT_SUBTITLE_ADDON = "https://opensubtitles-v3.strem.io"
+
+    /** Dépôt Nuvio français par défaut (FrenchStream, Movix, Vostfree, VoirAnime…). */
+    val DEFAULT_NUVIO_REPOS = listOf(
+        "https://raw.githubusercontent.com/Gowaru/gowaru-nuvio-providers/refs/heads/main/manifest.json",
+        "https://raw.githubusercontent.com/phisher98/phisher-nuvio-providers/refs/heads/main/manifest.json"
+    )
 
     @Volatile
     private var prefs: SharedPreferences? = null
@@ -84,5 +94,34 @@ object FrSettings {
 
     fun setSourceEnabled(name: String, enabled: Boolean) {
         disabledSources = if (enabled) disabledSources - name else disabledSources + name
+    }
+
+    // ------------------------------------------------------------- Nuvio
+
+    /** Utiliser les scrapeurs Nuvio (plugins locaux) comme sources de liens. */
+    var useNuvio: Boolean
+        get() = readBool(KEY_USE_NUVIO, true)
+        set(value) = writeBool(KEY_USE_NUVIO, value)
+
+    /** URLs des dépôts de scrapeurs Nuvio (manifest.json), une par ligne. */
+    var nuvioRepos: List<String>
+        get() = read(KEY_NUVIO_REPOS, "").split("\n").map { it.trim() }
+            .filter { it.isNotBlank() }.ifEmpty { DEFAULT_NUVIO_REPOS }
+        set(value) = write(KEY_NUVIO_REPOS, value.joinToString("\n"))
+
+    /** Scrapeurs Nuvio désactivés par l'utilisateur. */
+    var nuvioDisabled: Set<String>
+        get() = read(KEY_NUVIO_DISABLED, "").split("\n").filter { it.isNotBlank() }.toSet()
+        set(value) = write(KEY_NUVIO_DISABLED, value.joinToString("\n"))
+
+    /** Afficher aussi les scrapeurs Nuvio non français (EN, TR…) ou seulement les FR. */
+    var nuvioAllLangs: Boolean
+        get() = readBool(KEY_NUVIO_ALL, false)
+        set(value) = writeBool(KEY_NUVIO_ALL, value)
+
+    fun isNuvioEnabled(id: String): Boolean = id !in nuvioDisabled
+
+    fun setNuvioEnabled(id: String, enabled: Boolean) {
+        nuvioDisabled = if (enabled) nuvioDisabled - id else nuvioDisabled + id
     }
 }

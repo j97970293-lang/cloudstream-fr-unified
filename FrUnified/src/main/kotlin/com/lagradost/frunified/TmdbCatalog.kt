@@ -97,6 +97,15 @@ object TmdbCatalog {
         list(get("search/multi", mapOf("query" to query, "page" to page.toString())))
             .filter { it.title.isNotBlank() }
 
+    /** Meilleure correspondance de recherche (pour retrouver un ID TMDB à partir d'un titre). */
+    suspend fun searchBest(query: String, year: Int?): CatalogItem? {
+        val items = runCatching { search(query, 1) }.getOrDefault(emptyList())
+        if (items.isEmpty()) return null
+        if (items.size == 1) return items.first()
+        val best = items.maxByOrNull { TitleMatch.score(listOf(query), it.title, year, it.year) } ?: return null
+        return best.takeIf { TitleMatch.score(listOf(query), it.title, year, it.year) >= 0.55 }
+    }
+
     suspend fun row(path: String, page: Int, params: Map<String, String> = emptyMap(), kind: String? = null): List<CatalogItem> =
         list(get(path, params + mapOf("page" to page.toString())), kind)
 

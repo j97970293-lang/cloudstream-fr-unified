@@ -106,30 +106,55 @@ object SourceHub {
         }
 
         val queries = buildList {
-            payload.titles.forEach { add(it) }
-            payload.year?.let { year -> payload.titles.firstOrNull()?.let { add("$it $year") } }
+            payload.titles.take(6).forEach { add(it) }
+            payload.titles.firstOrNull()?.let { t ->
+                payload.year?.let { year -> add("$t $year") }
+            }
+            // Les sources qui séparent les saisons en fiches distinctes se
+            // retrouvent avec « Titre Saison N ».
+            if (payload.isSeries) {
+                val season = payload.season ?: 1
+                payload.titles.take(2).forEach { t ->
+                    if (season > 1) {
+                        add("$t saison $season")
+                        add("$t season $season")
+                    }
+                    add("$t s$season")
+                }
+            }
         }.map { it.trim() }
             .filter { it.isNotBlank() }
-            .distinctBy { TitleMatch.normalize(it) + it.count { c -> c.isDigit() } }
-            .take(4)
+            .distinctBy { TitleMatch.normalize(it) }
+            .take(6)
 
         var best: Pair<Double, String>? = null
 
         for (query in queries) {
-            val results = withTimeoutOrNull(SEARCH_TIMEOUT_MS) {
+            var results = withTimeoutOrNull(SEARCH_TIMEOUT_MS) {
                 runCatching {
                     if (api.hasQuickSearch) api.quickSearch(query) ?: api.search(query)
                     else api.search(query)
                 }.getOrElse { runCatching { api.search(query) }.getOrNull() }
             }.orEmpty()
 
+            // quickSearch est parfois limité : on complète avec la recherche complète
+            if (results.size <= 2 && api.hasQuickSearch) {
+                val full = runCatching {
+                    withTimeoutOrNull(SEARCH_TIMEOUT_MS) { api.search(query) }
+                }.getOrNull()
+                if (!full.isNullOrEmpty()) results = full
+            }
+
+            val wantedSeason = payload.season.takeIf { payload.isSeries }
             results.forEach { result ->
                 val candidateYear = when (result) {
                     is MovieSearchResponse -> result.year
                     is TvSeriesSearchResponse -> result.year
                     else -> null
                 }
-                val score = TitleMatch.score(payload.titles, result.name, payload.year, candidateYear)
+                val score = TitleMatch.score(
+                    payload.titles, result.name, payload.year, candidateYear, wantedSeason
+                )
                 if (score >= TitleMatch.ACCEPT_THRESHOLD && (best == null || score > best!!.first)) {
                     best = score to result.url
                 }
@@ -185,14 +210,30 @@ object SourceHub {
         }
         if (episodes.isEmpty()) return null
 
+        val sorted = { list: List<Episode> ->
+            list.sortedWith(compareBy({ it.season ?: 1 }, { it.episode ?: 0 }))
+        }
+
+        // 1. Correspondance exacte saison + épisode
         episodes.firstOrNull { it.season == season && it.episode == episode }?.let { return it.data }
-        episodes.firstOrNull { (it.season == null || it.season == 1) && it.episode == episode && season == 1 }
-            ?.let { return it.data }
+
+        // 2. Numérotation absolue (sites d'animés qui comptent 1..N toutes saisons)
         payload.absoluteEpisode?.let { abs ->
             episodes.firstOrNull { it.episode == abs }?.let { return it.data }
-            episodes.getOrNull(abs - 1)?.let { return it.data }
+            sorted(episodes).getOrNull(abs - 1)?.let { return it.data }
         }
-        return if (season == 1) episodes.getOrNull(episode - 1)?.data else null
+
+        // 3. Même numéro d'épisode, saison la plus proche (fiches « Saison N » séparées)
+        episodes.filter { it.episode == episode }
+            .minByOrNull { kotlin.math.abs((it.season ?: 1) - season) }?.let { return it.data }
+
+        // 4. Fiche à une seule saison alors qu'on cherche la saison N : numérotation locale
+        episodes.filter { it.season == null || it.season == 1 }.let { flat ->
+            if (flat.isNotEmpty()) flat.getOrNull(episode - 1)?.let { return it.data }
+        }
+
+        // 5. Dernier recours : position dans la liste triée
+        return sorted(episodes).getOrNull(episode - 1)?.data
     }
 
     private fun anyEpisodes(response: AnimeLoadResponse): List<Episode> =
