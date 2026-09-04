@@ -44,6 +44,52 @@ object NuvioClient {
     private const val SCRAPER_TIMEOUT_MS = 90_000L
     private const val NUVIO_CONCURRENCY = 6
 
+    /**
+     * Pile des threads d'exécution JS.
+     *
+     * Un thread Android a **1 Mo** de pile (le message d'erreur le disait :
+     * « StackOverflowError: stack size 1037KB »). Or les bundles Nuvio sont
+     * minifiés par esbuild : une seule expression peut imbriquer des centaines
+     * de niveaux, et le parseur/interpréteur Rhino consomme ~1 cadre de pile
+     * JVM par nœud d'AST. `evaluateString` sur le bundle débordait donc AVANT
+     * même d'exécuter `getStreams`.
+     *
+     * Rhino ne sait pas fonctionner autrement qu'en récursif : la seule
+     * solution est de lui donner une vraie pile. 32 Mo de pile *virtuelle*
+     * (réservation d'adresses, pages allouées à l'usage : le coût réel reste
+     * de quelques dizaines de Ko pour un bundle normal).
+     */
+    private const val JS_STACK_BYTES = 32L * 1024 * 1024
+
+    /**
+     * Exécute [block] sur un thread dédié à grande pile et rend son résultat.
+     * Toute exception (y compris [StackOverflowError]) est propagée à l'appelant.
+     */
+    private fun <T> withBigStack(name: String, block: () -> T): T {
+        val result = java.util.concurrent.atomic.AtomicReference<Any?>(null)
+        val error = java.util.concurrent.atomic.AtomicReference<Throwable?>(null)
+        val thread = Thread(null, {
+            try {
+                result.set(block())
+            } catch (t: Throwable) {
+                // StackOverflowError inclus : on le remonte au lieu de tuer le thread
+                error.set(t)
+            }
+        }, "nuvio-js-$name", JS_STACK_BYTES)
+        thread.isDaemon = true
+        thread.start()
+        // Borne dure : un bundle parti en boucle infinie ne doit pas retenir
+        // l'appelant. Le thread est daemon, il n'empêchera pas l'arrêt du process.
+        thread.join(SCRAPER_TIMEOUT_MS)
+        if (thread.isAlive) {
+            runCatching { @Suppress("DEPRECATION") thread.interrupt() }
+            throw java.util.concurrent.TimeoutException("délai dépassé")
+        }
+        error.get()?.let { throw it }
+        @Suppress("UNCHECKED_CAST")
+        return result.get() as T
+    }
+
     private const val NETWORK_TIMEOUT_MS = 30_000
 
     data class NuvioScraper(
@@ -321,132 +367,152 @@ object NuvioClient {
             return@withContext false
         }
 
-        val cx = try {
-            RhinoContext.enter()
+        // Rhino est récursif : parser un bundle esbuild minifié dépasse la pile
+        // de 1 Mo d'un thread Android. On lui donne 32 Mo (cf. withBigStack).
+        val raw: List<RawStream>? = try {
+            withBigStack(scraper.id) {
+            currentScraper.set(scraper.id)
+            val cx = try {
+                RhinoContext.enter()
+            } catch (t: Throwable) {
+                lastResults[scraper.id] = "✗ moteur: " + (t.message?.take(80) ?: t::class.simpleName.orEmpty())
+                currentScraper.remove()
+                return@withBigStack null
+            }
+            var scopeRef: Scriptable? = null
+            try {
+                cx.optimizationLevel = -1   // interprété : compatible ART/Android
+                cx.languageVersion = RhinoContext.VERSION_ES6
+
+                // IMPORTANT : TopLevel() active le cache des builtins (cacheBuiltins) :
+                // sans lui, le prototype des fonctions génératrices n'est pas initialisé
+                // et les bundles transpilés (babel) échouent en « Cannot find function apply ».
+                val scope = cx.initStandardObjects(com.frunified.rhino.TopLevel())
+                scopeRef = scope
+                // Le dex Android ne transporte ni META-INF/services ni .properties :
+                // sans cela RegExp et les messages Rhino sont introuvables (cf. installRuntime).
+                installRuntime(cx, scope)
+                cx.evaluateString(scope, JS_ENV, "prelude", 1, null)
+                injectEnv(scope)
+
+                // module.exports / global.getStreams : les deux formats de sortie
+                val module = cx.newObject(scope)
+                val exports = cx.newObject(scope)
+                module.put("exports", module, exports)
+                scope.put("module", scope, module)
+                scope.put("exports", scope, exports)
+
+                // fetch, b64 et URL sont fournis par Kotlin
+                scope.put("fetch", scope, FetchFunction())
+                scope.put("__b64Encode", scope, B64Function(encode = true))
+                scope.put("__b64Decode", scope, B64Function(encode = false))
+                // Permet aux timers du bundle (limiteurs de débit, retry…) d'attendre
+                // réellement au lieu de tourner à vide dans la boucle d'événements.
+                scope.put("__sleep", scope, SleepFunction())
+
+                try {
+                    cx.evaluateString(scope, code, scraper.id, 1, null)
+                } catch (t: Throwable) {
+                    lastResults[scraper.id] = "✗ erreur JS : " + jsError(code, t) + diagSuffix(scraper.id)
+                    return@withBigStack null
+                }
+
+                // Récupère getStreams : module.exports.getStreams OU global.getStreams
+                var fn: Any? = null
+                runCatching {
+                    val exported = (module.get("exports", module) as? Scriptable) ?: scope
+                    fn = exported.get("getStreams", exported)
+                }
+                if (fn == null || fn == Scriptable.NOT_FOUND) {
+                    runCatching { fn = scope.get("getStreams", scope) }
+                }
+                if (fn == null || fn == Scriptable.NOT_FOUND || fn !is com.frunified.rhino.Callable) {
+                    lastResults[scraper.id] = "✗ getStreams introuvable"
+                    return@withBigStack null
+                }
+
+                val args = arrayOf<Any?>(
+                    cx.evaluateString(scope, tmdbId.toString(), "n", 1, null),
+                    cx.evaluateString(scope, JSONObject.quote(mediaType), "s", 1, null),
+                    cx.evaluateString(scope, season.toString(), "n", 1, null),
+                    cx.evaluateString(scope, episode.toString(), "n", 1, null)
+                )
+
+                var result: Any? = try {
+                    (fn as com.frunified.rhino.Callable).call(cx, scope, scope, args)
+                } catch (t: Throwable) {
+                    lastResults[scraper.id] = "✗ appel : " + jsError(code, t) + diagSuffix(scraper.id)
+                    return@withBigStack null
+                }
+
+                // Fait tourner la boucle d'événements JS (micro-tâches + timers)
+                // jusqu'à épuisement, dans la limite du budget du scrapeur.
+                val budget = (SCRAPER_TIMEOUT_MS - 5_000L).coerceAtLeast(15_000L)
+                val deadline = System.currentTimeMillis() + budget
+                var guard = 0
+                while (timerCount(cx, scope) > 0 && guard++ < 200 &&
+                    System.currentTimeMillis() < deadline
+                ) {
+                    drain(cx, scope, deadline - System.currentTimeMillis())
+                }
+
+                // Si le résultat est notre promesse, on lit sa valeur
+                val resultObj = result as? Scriptable
+                if (resultObj != null && runCatching {
+                        ScriptableObject.hasProperty(resultObj, "__settled")
+                    }.getOrDefault(false)) {
+                    if (ScriptableObject.getProperty(resultObj, "__rejected") == java.lang.Boolean.TRUE) {
+                        val rej = ScriptableObject.getProperty(resultObj, "__value")
+                        lastResults[scraper.id] =
+                            "✗ rejet : " + (rej?.toString()?.take(80) ?: "inconnu") + diagSuffix(scraper.id)
+                        return@withBigStack null
+                    }
+                    result = ScriptableObject.getProperty(resultObj, "__value")
+                }
+
+                val streams = asArray(cx, scope, result)
+                if (streams == null) {
+                    lastResults[scraper.id] = "✗ résultat non reconnu" + diagSuffix(scraper.id)
+                    return@withBigStack null
+                }
+                val maxHere = FrSettings.nuvioMaxPerScraper
+                val out = mutableListOf<RawStream>()
+
+                for (i in 0 until runCatching { RhinoContext.toNumber(ScriptableObject.getProperty(streams, "length")).toInt() }.getOrDefault(0)) {
+                    if (maxHere > 0 && out.size >= maxHere) break
+                    val obj = ScriptableObject.getProperty(streams, i) as? Scriptable ?: continue
+                    out += readStream(obj) ?: continue
+                }
+                out
+            } catch (t: Throwable) {
+                // un scrapeur qui plante ne doit jamais faire planter la lecture
+                lastResults[scraper.id] = "✗ interne: " + (t.message?.take(80) ?: t::class.simpleName.orEmpty()) + diagSuffix(scraper.id)
+                null
+            } finally {
+                captureConsole(scopeRef, scraper.id)
+                RhinoContext.exit()
+                currentScraper.remove()
+            }
+            }
         } catch (t: Throwable) {
-            lastResults[scraper.id] = "✗ moteur: " + (t.message?.take(80) ?: t::class.simpleName.orEmpty())
+            val why = if (t is StackOverflowError) {
+                "pile insuffisante (bundle trop imbriqué)"
+            } else (t.message?.take(80) ?: t::class.simpleName.orEmpty())
+            lastResults[scraper.id] = "✗ interne: " + why + diagSuffix(scraper.id)
             currentScraper.remove()
             return@withContext false
         }
-        var scopeRef: Scriptable? = null
-        try {
-            cx.optimizationLevel = -1   // interprété : compatible ART/Android
-            cx.languageVersion = RhinoContext.VERSION_ES6
 
-            // IMPORTANT : TopLevel() active le cache des builtins (cacheBuiltins) :
-            // sans lui, le prototype des fonctions génératrices n'est pas initialisé
-            // et les bundles transpilés (babel) échouent en « Cannot find function apply ».
-            val scope = cx.initStandardObjects(com.frunified.rhino.TopLevel())
-            scopeRef = scope
-            // Le dex Android ne transporte ni META-INF/services ni .properties :
-            // sans cela RegExp et les messages Rhino sont introuvables (cf. installRuntime).
-            installRuntime(cx, scope)
-            cx.evaluateString(scope, JS_ENV, "prelude", 1, null)
-            injectEnv(scope)
+        if (raw == null) return@withContext false
 
-            // module.exports / global.getStreams : les deux formats de sortie
-            val module = cx.newObject(scope)
-            val exports = cx.newObject(scope)
-            module.put("exports", module, exports)
-            scope.put("module", scope, module)
-            scope.put("exports", scope, exports)
-
-            // fetch, b64 et URL sont fournis par Kotlin
-            scope.put("fetch", scope, FetchFunction())
-            scope.put("__b64Encode", scope, B64Function(encode = true))
-            scope.put("__b64Decode", scope, B64Function(encode = false))
-            // Permet aux timers du bundle (limiteurs de débit, retry…) d'attendre
-            // réellement au lieu de tourner à vide dans la boucle d'événements.
-            scope.put("__sleep", scope, SleepFunction())
-
-            try {
-                cx.evaluateString(scope, code, scraper.id, 1, null)
-            } catch (t: Throwable) {
-                lastResults[scraper.id] = "✗ erreur JS : " + jsError(code, t) + diagSuffix(scraper.id)
-                return@withContext false
-            }
-
-            // Récupère getStreams : module.exports.getStreams OU global.getStreams
-            var fn: Any? = null
-            runCatching {
-                val exported = (module.get("exports", module) as? Scriptable) ?: scope
-                fn = exported.get("getStreams", exported)
-            }
-            if (fn == null || fn == Scriptable.NOT_FOUND) {
-                runCatching { fn = scope.get("getStreams", scope) }
-            }
-            if (fn == null || fn == Scriptable.NOT_FOUND || fn !is com.frunified.rhino.Callable) {
-                lastResults[scraper.id] = "✗ getStreams introuvable"
-                return@withContext false
-            }
-
-            val args = arrayOf<Any?>(
-                cx.evaluateString(scope, tmdbId.toString(), "n", 1, null),
-                cx.evaluateString(scope, JSONObject.quote(mediaType), "s", 1, null),
-                cx.evaluateString(scope, season.toString(), "n", 1, null),
-                cx.evaluateString(scope, episode.toString(), "n", 1, null)
-            )
-
-            var result: Any? = try {
-                (fn as com.frunified.rhino.Callable).call(cx, scope, scope, args)
-            } catch (t: Throwable) {
-                lastResults[scraper.id] = "✗ appel : " + jsError(code, t) + diagSuffix(scraper.id)
-                return@withContext false
-            }
-
-            // Fait tourner la boucle d'événements JS (micro-tâches + timers)
-            // jusqu'à épuisement, dans la limite du budget du scrapeur.
-            val budget = (SCRAPER_TIMEOUT_MS - 5_000L).coerceAtLeast(15_000L)
-            val deadline = System.currentTimeMillis() + budget
-            var guard = 0
-            while (timerCount(cx, scope) > 0 && guard++ < 200 &&
-                System.currentTimeMillis() < deadline
-            ) {
-                drain(cx, scope, deadline - System.currentTimeMillis())
-            }
-
-            // Si le résultat est notre promesse, on lit sa valeur
-            val resultObj = result as? Scriptable
-            if (resultObj != null && runCatching {
-                    ScriptableObject.hasProperty(resultObj, "__settled")
-                }.getOrDefault(false)) {
-                if (ScriptableObject.getProperty(resultObj, "__rejected") == java.lang.Boolean.TRUE) {
-                    val rej = ScriptableObject.getProperty(resultObj, "__value")
-                    lastResults[scraper.id] =
-                        "✗ rejet : " + (rej?.toString()?.take(80) ?: "inconnu") + diagSuffix(scraper.id)
-                    return@withContext false
-                }
-                result = ScriptableObject.getProperty(resultObj, "__value")
-            }
-
-            val streams = asArray(cx, scope, result)
-            if (streams == null) {
-                lastResults[scraper.id] = "✗ résultat non reconnu" + diagSuffix(scraper.id)
-                return@withContext false
-            }
-            var emitted = false
-            var count = 0
-            val maxHere = FrSettings.nuvioMaxPerScraper
-
-            for (i in 0 until runCatching { RhinoContext.toNumber(ScriptableObject.getProperty(streams, "length")).toInt() }.getOrDefault(0)) {
-                if (maxHere > 0 && count >= maxHere) break
-                val obj = ScriptableObject.getProperty(streams, i) as? Scriptable ?: continue
-                val link = toLink(scope, scraper.name, payload, obj) ?: continue
-                emitted = true
-                count++
-                callback(link)
-            }
-            lastResults[scraper.id] = if (emitted) "✓ $count lien(s)" else "✓ 0 lien"
-            emitted
-        } catch (t: Throwable) {
-            // un scrapeur qui plante ne doit jamais faire planter la lecture
-            lastResults[scraper.id] = "✗ interne: " + (t.message?.take(80) ?: t::class.simpleName.orEmpty()) + diagSuffix(scraper.id)
-            false
-        } finally {
-            captureConsole(scopeRef, scraper.id)
-            RhinoContext.exit()
-            currentScraper.remove()
+        // Construction des ExtractorLink HORS du thread JS (fonctions suspend).
+        var count = 0
+        raw.forEach { item ->
+            toLink(scraper.name, payload, item)?.let { count++; callback(it) }
         }
+        lastResults[scraper.id] = if (count > 0) "✓ $count lien(s)" else "✓ 0 lien"
+        currentScraper.remove()
+        count > 0
     }
 
     /** Succinct : dernières requêtes + dernière ligne console JS (pour autopsier un échec). */
@@ -496,12 +562,24 @@ object NuvioClient {
 
     // --------------------------------------------------- conversion flux
 
-    private suspend fun toLink(
-        scope: Scriptable,
-        scraperName: String,
-        payload: PlayPayload,
-        obj: Scriptable
-    ): ExtractorLink? {
+    /**
+     * Flux lu depuis le JS, en données **purement Kotlin**.
+     *
+     * Indispensable : les objets Rhino ne doivent pas franchir la frontière du
+     * thread JS (le Context est lié au thread, et `newExtractorLink` est une
+     * fonction `suspend` qu'on ne peut pas appeler dedans). On extrait donc
+     * tout ce dont on a besoin pendant que le scope est vivant.
+     */
+    private data class RawStream(
+        val url: String?,
+        val infoHash: String?,
+        val label: String,
+        val language: String?,
+        val headers: Map<String, String>?
+    )
+
+    /** Lit un objet flux JS (appelé DANS le thread Rhino). */
+    private fun readStream(obj: Scriptable): RawStream? {
         fun prop(vararg names: String): String? {
             for (name in names) {
                 val v = runCatching { ScriptableObject.getProperty(obj, name) }.getOrNull() ?: continue
@@ -519,8 +597,7 @@ object NuvioClient {
 
         val url = prop("url", "file", "videoUrl", "src")?.takeIf { it.startsWith("http") }
         val infoHash = prop("infoHash")?.takeIf { Regex("^[a-fA-F0-9]{40}$").matches(it) }
-        val label = prop("name", "title", "fileName", "label", "description") ?: scraperName
-        val language = prop("language", "lang")?.uppercase()
+        if (url == null && infoHash == null) return null
 
         val headers = runCatching {
             val h = ScriptableObject.getProperty(obj, "headers")
@@ -536,16 +613,34 @@ object NuvioClient {
             }
         }.getOrNull()?.takeIf { it.isNotEmpty() }
 
+        return RawStream(
+            url = url,
+            infoHash = infoHash,
+            label = prop("name", "title", "fileName", "label", "description").orEmpty(),
+            language = prop("language", "lang")?.uppercase(),
+            headers = headers
+        )
+    }
+
+    /** Construit l'ExtractorLink (hors thread JS : `newExtractorLink` est suspend). */
+    private suspend fun toLink(
+        scraperName: String,
+        payload: PlayPayload,
+        raw: RawStream
+    ): ExtractorLink? {
+        val label = raw.label.ifBlank { scraperName }
+        val quality = qualityOf("$label ${raw.language.orEmpty()}")
+
         return when {
-            url != null -> runCatching {
-                newExtractorLink("Nuvio · $scraperName", "$scraperName • $label", url) {
-                    this.quality = qualityOf("$label $language")
-                    headers?.let { this.headers = it }
+            raw.url != null -> runCatching {
+                newExtractorLink("Nuvio · $scraperName", "$scraperName • $label", raw.url) {
+                    this.quality = quality
+                    raw.headers?.let { this.headers = it }
                 }
             }.getOrNull()
 
-            infoHash != null -> runCatching {
-                val magnet = "magnet:?xt=urn:btih:$infoHash" +
+            raw.infoHash != null -> runCatching {
+                val magnet = "magnet:?xt=urn:btih:${raw.infoHash}" +
                     "&dn=${payload.primaryTitle.replace(" ", "+")}" +
                     TRACKERS.joinToString("") { "&tr=$it" }
                 newExtractorLink(
@@ -554,7 +649,7 @@ object NuvioClient {
                     magnet,
                     ExtractorLinkType.MAGNET
                 ) {
-                    this.quality = qualityOf("$label $language")
+                    this.quality = quality
                 }
             }.getOrNull()
 
