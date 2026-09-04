@@ -37,6 +37,8 @@ import java.util.concurrent.ConcurrentHashMap
  */
 object NuvioClient {
 
+    /** v12 : boucle d'événements JS (micro-tâches + timers datés) — cf. tools/V12-RELEASE.md */
+
     private const val SCRIPT_TTL_MS = 12 * 60 * 60 * 1000L   // 12 h
     private const val MANIFEST_TTL_MS = 6 * 60 * 60 * 1000L  // 6 h
     private const val SCRAPER_TIMEOUT_MS = 90_000L
@@ -353,6 +355,9 @@ object NuvioClient {
             scope.put("fetch", scope, FetchFunction())
             scope.put("__b64Encode", scope, B64Function(encode = true))
             scope.put("__b64Decode", scope, B64Function(encode = false))
+            // Permet aux timers du bundle (limiteurs de débit, retry…) d'attendre
+            // réellement au lieu de tourner à vide dans la boucle d'événements.
+            scope.put("__sleep", scope, SleepFunction())
 
             try {
                 cx.evaluateString(scope, code, scraper.id, 1, null)
@@ -389,12 +394,16 @@ object NuvioClient {
                 return@withContext false
             }
 
-            // Fait avancer les timers et les chaînes de promesses synchrones
+            // Fait tourner la boucle d'événements JS (micro-tâches + timers)
+            // jusqu'à épuisement, dans la limite du budget du scrapeur.
+            val budget = (SCRAPER_TIMEOUT_MS - 5_000L).coerceAtLeast(15_000L)
+            val deadline = System.currentTimeMillis() + budget
             var guard = 0
-            while (timerCount(cx, scope) > 0 && guard++ < 80) {
-                drain(cx, scope)
+            while (timerCount(cx, scope) > 0 && guard++ < 200 &&
+                System.currentTimeMillis() < deadline
+            ) {
+                drain(cx, scope, deadline - System.currentTimeMillis())
             }
-            drain(cx, scope)
 
             // Si le résultat est notre promesse, on lit sa valeur
             val resultObj = result as? Scriptable
@@ -464,8 +473,8 @@ object NuvioClient {
             (scope.get(name, scope) as? com.frunified.rhino.Callable)?.call(cx, scope, scope, args)
         }.getOrNull()
 
-    private fun drain(cx: RhinoContext, scope: Scriptable) {
-        callJs(cx, scope, "__drain", emptyArray())
+    private fun drain(cx: RhinoContext, scope: Scriptable, budgetMs: Long = 30_000L) {
+        callJs(cx, scope, "__drain", arrayOf<Any?>(budgetMs.coerceAtLeast(0L).toDouble()))
     }
 
     private fun timerCount(cx: RhinoContext, scope: Scriptable): Int =
@@ -802,6 +811,16 @@ object NuvioClient {
                 ?: com.frunified.rhino.Undefined.instance
     }
 
+    /** `__sleep(ms)` : pause bornée, utilisée par la boucle d'événements JS. */
+    private class SleepFunction : BaseFunction() {
+        @Suppress("DEPRECATION")
+        override fun call(cx: RhinoContext, scope: Scriptable, thisObj: Scriptable?, args: Array<Any>): Any? {
+            val ms = runCatching { RhinoContext.toNumber(args.getOrNull(0)).toLong() }.getOrDefault(0L)
+            if (ms > 0) runCatching { Thread.sleep(ms.coerceAtMost(500L)) }
+            return com.frunified.rhino.Undefined.instance
+        }
+    }
+
     private class B64Function(private val encode: Boolean) : BaseFunction() {
         @Suppress("DEPRECATION")
         override fun call(cx: RhinoContext, scope: Scriptable, thisObj: Scriptable?, args: Array<Any>): Any? {
@@ -833,13 +852,67 @@ var globalThis = this;
 var process = { env: {} };
 var navigator = { userAgent: 'Mozilla/5.0 (Android)' };
 var location = { href: 'https://frunified.fr/', protocol: 'https:', hostname: 'frunified.fr', origin: 'https://frunified.fr' };
+// ----- Boucle d'événements : file de micro-tâches (promesses) + timers datés.
+// Les bundles Nuvio « attendent » en enchaînant Promise.resolve().then(self)
+// jusqu'à ce que Date.now() dépasse l'échéance (limiteur de débit `delay()`).
+// Avec des promesses purement synchrones, cet enchaînement ré-entrait dans
+// lui-même → récursion de plusieurs millions de niveaux → StackOverflowError
+// sur la pile (courte) d'Android, donc « 0 lien » pour TOUS les scrapeurs.
+// Ici les callbacks sont mis en file et exécutés par une BOUCLE (trampoline).
+var __micro = [];
 var __timers = [];
-function setTimeout(fn, ms) { __timers.push(fn); return __timers.length; }
-function clearTimeout(id) {}
-function setInterval(fn, ms) { __timers.push(fn); return __timers.length; }
-function clearInterval(id) {}
-function __drain() { while (__timers.length) { var t = __timers.shift(); try { t(); } catch (e) {} } }
-function __timerCount() { return __timers.length; }
+var __timerSeq = 0;
+function __enqueue(fn) { __micro.push(fn); }
+function setTimeout(fn, ms) {
+  var id = ++__timerSeq;
+  __timers.push({ id: id, fn: fn, due: Date.now() + (Number(ms) || 0) });
+  return id;
+}
+function clearTimeout(id) {
+  for (var i = 0; i < __timers.length; i++) {
+    if (__timers[i].id === id) { __timers.splice(i, 1); return; }
+  }
+}
+// setInterval déclenché une seule fois : un vrai intervalle ne finirait jamais.
+function setInterval(fn, ms) { return setTimeout(fn, ms); }
+function clearInterval(id) { clearTimeout(id); }
+
+function __runMicro() {
+  var n = 0;
+  while (__micro.length && n++ < 5000000) {
+    var f = __micro.shift();
+    try { f(); } catch (e) {}
+  }
+}
+
+/**
+ * Fait tourner la boucle jusqu'à épuisement, dans la limite d'un budget (ms).
+ * Les timers dont l'échéance dépasse le budget (timeouts de 45 s des bundles,
+ * AbortSignal.timeout…) sont abandonnés au lieu de bloquer.
+ */
+function __drain(budget) {
+  var end = Date.now() + (Number(budget) || 30000);
+  var guard = 0;
+  while (guard++ < 1000000) {
+    __runMicro();
+    if (!__timers.length) return;
+    if (Date.now() > end) return;
+    var idx = 0;
+    for (var i = 1; i < __timers.length; i++) {
+      if (__timers[i].due < __timers[idx].due) idx = i;
+    }
+    var t = __timers[idx];
+    var wait = t.due - Date.now();
+    if (wait > 0) {
+      if (t.due > end) { __timers.splice(idx, 1); continue; }
+      if (typeof __sleep === 'function') __sleep(wait > 200 ? 200 : wait);
+      if (Date.now() < t.due) continue;
+    }
+    __timers.splice(idx, 1);
+    try { t.fn(); } catch (e) {}
+  }
+}
+function __timerCount() { return __timers.length + __micro.length; }
 
 // ----- Polyfill du patch spread du moteur Rhino embarqué :
 // f(...a) -> f.apply(this, __spread(a)) ; [a, ...b] -> __spread([a], b)
@@ -873,18 +946,23 @@ function Promise(executor) {
   self.finally = function (onF) {
     return self.then(function (v) { if (onF) onF(); return v; }, function (e) { if (onF) onF(); throw e; });
   };
+  // Les callbacks sont mis en file de micro-tâches (et NON exécutés en place) :
+  // c'est ce qui empêche `Promise.resolve().then(boucle)` de récurser sur la
+  // pile jusqu'au StackOverflowError.
   self.__run = function () {
     if (!self.__settled) return;
     var cbs = self.__callbacks; self.__callbacks = [];
     for (var i = 0; i < cbs.length; i++) {
       (function (cb) {
-        try {
-          if (self.__rejected) {
-            if (cb.r) { cb.res(cb.r(self.__value)); } else { cb.rej(self.__value); }
-          } else {
-            if (cb.f) { cb.res(cb.f(self.__value)); } else { cb.res(self.__value); }
-          }
-        } catch (e) { cb.rej(e); }
+        __enqueue(function () {
+          try {
+            if (self.__rejected) {
+              if (cb.r) { cb.res(cb.r(self.__value)); } else { cb.rej(self.__value); }
+            } else {
+              if (cb.f) { cb.res(cb.f(self.__value)); } else { cb.res(self.__value); }
+            }
+          } catch (e) { cb.rej(e); }
+        });
       })(cbs[i]);
     }
   };
@@ -1187,7 +1265,7 @@ Headers.prototype.append = function (k, v) {
 Headers.prototype.forEach = function (fn) { for (var k in this._h) if (this._h.hasOwnProperty(k)) fn(this._h[k], k); };
 
 // ----- queueMicrotask (exécution immédiate suffit avec nos promesses synchrones)
-function queueMicrotask(fn) { try { fn(); } catch (e) {} }
+function queueMicrotask(fn) { __enqueue(function () { try { fn(); } catch (e) {} }); }
 
 // ----- divers
 var crypto = { getRandomValues: function (arr) { return arr; } };
