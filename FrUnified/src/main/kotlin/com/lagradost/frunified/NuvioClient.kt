@@ -41,7 +41,10 @@ object NuvioClient {
 
     private const val SCRIPT_TTL_MS = 12 * 60 * 60 * 1000L   // 12 h
     private const val MANIFEST_TTL_MS = 6 * 60 * 60 * 1000L  // 6 h
-    private const val SCRAPER_TIMEOUT_MS = 90_000L
+    private const val SCRAPER_TIMEOUT_MS = 45_000L
+
+    /** Lecture : un site FR qui traîne au-delà ne fournira rien d'utile. */
+    private const val READ_TIMEOUT_MS = 20_000
     private const val NUVIO_CONCURRENCY = 6
 
     /**
@@ -104,7 +107,7 @@ object NuvioClient {
         return result.get() as T
     }
 
-    private const val NETWORK_TIMEOUT_MS = 30_000
+    private const val NETWORK_TIMEOUT_MS = 8_000
 
     data class NuvioScraper(
         val id: String,
@@ -274,7 +277,7 @@ object NuvioClient {
     private var engineError: String? = null
 
     /** Marqueur de build : permet de vérifier d'un coup d'œil la version installée. */
-    const val ENGINE_BUILD = "v14"
+    const val ENGINE_BUILD = "v15"
 
     /**
      * Mesure la profondeur de récursion JS réellement disponible.
@@ -568,7 +571,14 @@ object NuvioClient {
         raw.forEach { item ->
             toLink(scraper.name, payload, item)?.let { count++; callback(it) }
         }
-        lastResults[scraper.id] = if (count > 0) "✓ $count lien(s)" else "✓ 0 lien"
+        lastResults[scraper.id] = if (count > 0) {
+            "✓ $count lien(s)"
+        } else {
+            // Un « 0 lien » muet n'apprend rien : on joint le journal des
+            // requêtes (hôte, code HTTP, durée) et la dernière ligne console JS.
+            val why = if (raw.isEmpty()) "aucun flux renvoyé" else "flux inexploitables (${raw.size})"
+            "✓ 0 lien · $why" + diagSuffix(scraper.id)
+        }
         currentScraper.remove()
         count > 0
     }
@@ -687,7 +697,11 @@ object NuvioClient {
         raw: RawStream
     ): ExtractorLink? {
         val label = raw.label.ifBlank { scraperName }
-        val quality = qualityOf("$label ${raw.language.orEmpty()}")
+        // Les motifs prioritaires (VF, FRENCH, 1080…) sont appliqués ICI, sous
+        // forme de bonus de qualité : les liens partant vers le lecteur au fil
+        // de l'eau, on ne peut plus les trier après coup, mais CloudStream
+        // classe déjà les serveurs par qualité décroissante.
+        val quality = qualityOf("$label ${raw.language.orEmpty()}") + priorityBonus(label, raw.language)
 
         return when {
             raw.url != null -> runCatching {
@@ -713,6 +727,20 @@ object NuvioClient {
 
             else -> null
         }
+    }
+
+    /**
+     * Bonus appliqué aux serveurs prioritaires de l'utilisateur (réglages ⚙️).
+     * Le 1er motif de la liste vaut le bonus le plus fort.
+     */
+    private fun priorityBonus(label: String, language: String?): Int {
+        val patterns = runCatching { FrSettings.nuvioPriorityPatterns }.getOrDefault(emptyList())
+        if (patterns.isEmpty()) return 0
+        val hay = ("$label ${language.orEmpty()}").uppercase()
+        patterns.forEachIndexed { i, p ->
+            if (p.isNotBlank() && hay.contains(p.uppercase())) return (patterns.size - i) * 1000
+        }
+        return 0
     }
 
     private val TRACKERS = listOf(
@@ -785,12 +813,35 @@ object NuvioClient {
     private fun httpGet(url: String, extraHeaders: Map<String, String>): String =
         doHttp(url, "GET", extraHeaders, null).second
 
+    /**
+     * Hôtes injoignables (DNS mort, connexion refusée) et instant d'expiration.
+     *
+     * Beaucoup de sites FR des bundles Nuvio sont définitivement morts
+     * (french-anime.net, wiflix.*, coflix.to…). Sans cette mémoire, CHAQUE
+     * scrapeur retentait CHAQUE domaine mort et payait le délai de connexion à
+     * chaque requête : c'est la cause principale de l'attente interminable
+     * pour un résultat qu'on sait vide.
+     */
+    private val deadHosts = ConcurrentHashMap<String, Long>()
+    private const val DEAD_HOST_TTL_MS = 10 * 60 * 1000L   // 10 min
+
     private fun doHttp(
         url: String,
         method: String,
         headers: Map<String, String>,
         body: String?
     ): Pair<Int, String> {
+        val host = runCatching { URL(url).host }.getOrNull()
+
+        // Hôte déjà constaté injoignable : on échoue tout de suite.
+        if (host != null) {
+            val until = deadHosts[host]
+            if (until != null) {
+                if (until > System.currentTimeMillis()) return 0 to ""
+                deadHosts.remove(host)
+            }
+        }
+
         val conn = try {
             URL(url).openConnection() as HttpURLConnection
         } catch (t: Throwable) {
@@ -799,7 +850,7 @@ object NuvioClient {
         try {
             conn.requestMethod = method.uppercase()
             conn.connectTimeout = NETWORK_TIMEOUT_MS
-            conn.readTimeout = 90_000
+            conn.readTimeout = READ_TIMEOUT_MS
             conn.instanceFollowRedirects = true
             conn.setRequestProperty(
                 "User-Agent",
@@ -823,6 +874,15 @@ object NuvioClient {
             val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
             return code to text
         } catch (t: Throwable) {
+            // DNS introuvable / connexion refusée / délai dépassé : l'hôte est
+            // hors service, on l'écarte pour les prochaines requêtes.
+            val fatal = t is java.net.UnknownHostException ||
+                t is java.net.ConnectException ||
+                t is java.net.SocketTimeoutException ||
+                t is javax.net.ssl.SSLException
+            if (fatal && host != null) {
+                deadHosts[host] = System.currentTimeMillis() + DEAD_HOST_TTL_MS
+            }
             return 0 to ""
         } finally {
             runCatching { conn.disconnect() }
@@ -880,7 +940,7 @@ object NuvioClient {
             // tests doux ET jamais bloquants pour la lecture réelle.
             val ok = runCatching {
                 testSemaphore.withPermit {
-                    withTimeoutOrNull(150_000L) {
+                    withTimeoutOrNull(SCRAPER_TIMEOUT_MS + 10_000L) {
                         runScraper(scraper, tc.tmdbId, tc.type, tc.season, tc.episode, tc.payload) { links += it }
                     } ?: false
                 }
