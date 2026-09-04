@@ -156,6 +156,12 @@ private class Section(
 
     }
 
+    /** Ouvre la section d'emblée (pour celles qu'on doit voir tout de suite). */
+    fun expand() {
+        body.visibility = View.VISIBLE
+        chevron.text = "▾"
+    }
+
     fun toggle() {
         val expanding = body.visibility != View.VISIBLE
         body.visibility = if (expanding) View.VISIBLE else View.GONE
@@ -263,6 +269,7 @@ object SettingsDialog {
         sScraping.addToBody(localSwitch)
         sScraping.addToBody(stremioSwitch)
         sScraping.addToBody(subsSwitch)
+        sScraping.expand()
         root.addView(sScraping)
 
         // ================================================== 3. Clés API
@@ -316,7 +323,10 @@ object SettingsDialog {
         val srcCheckboxes = mutableListOf<CheckBox>()
         fun refreshSrcCount() {
             val on = srcCheckboxes.count { it.isChecked }
-            sCs.setSummary("$on / ${srcNames.size} activées")
+            val ko = SourceHub.quarantinedNames().size
+            sCs.setSummary(
+                "$on / ${srcNames.size} activées" + if (ko > 0) "  ·  $ko hors service" else ""
+            )
         }
         GlobalScope.launch {
             val sources = SourceHub.detectedSources()
@@ -387,9 +397,51 @@ object SettingsDialog {
                         }
                     }
                     refreshSrcCount()
+
+                    // Bouton : teste toutes les extensions et décoche celles
+                    // qui ne renvoient aucun résultat exploitable.
+                    val purgeBtn = Button(context).apply {
+                        text = "🧹  Tester tout et désactiver ce qui ne marche pas"
+                        textSize = 13f
+                    }
+                    val purgeInfo = TextView(context).label(context, "", 11f, p.sub)
+                    csContainer.addView(purgeBtn)
+                    csContainer.addView(purgeInfo)
+                    purgeBtn.setOnClickListener {
+                        purgeBtn.isEnabled = false
+                        GlobalScope.launch {
+                            var dead = 0
+                            sources.forEachIndexed { i, api ->
+                                withContext(Dispatchers.Main) {
+                                    purgeInfo.setTextColor(p.sub)
+                                    purgeInfo.text =
+                                        "Test ${i + 1}/${sources.size} : ${api.name}…"
+                                }
+                                val verdict = runCatching { SourceHub.testSource(api.name) }
+                                    .getOrDefault("✗")
+                                if (!verdict.startsWith("✓")) {
+                                    dead++
+                                    FrSettings.setSourceEnabled(api.name, false)
+                                    withContext(Dispatchers.Main) {
+                                        srcCheckboxes.getOrNull(i)?.isChecked = false
+                                    }
+                                }
+                            }
+                            withContext(Dispatchers.Main) {
+                                purgeInfo.setTextColor(if (dead > 0) p.err else p.ok)
+                                purgeInfo.text = if (dead > 0)
+                                    "$dead source(s) hors service désactivée(s). " +
+                                        "Les autres restent actives."
+                                else "Toutes les sources répondent correctement."
+                                refreshSrcCount()
+                                purgeBtn.isEnabled = true
+                            }
+                        }
+                    }
                 }
             }
         }
+        sCs.expand()
         root.addView(sCs)
 
         // ================================================== 6. Addons Stremio

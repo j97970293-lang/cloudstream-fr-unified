@@ -23,6 +23,8 @@ object AniListCatalog {
         seasonYear
         format
         episodes
+        status
+        nextAiringEpisode { episode }
         averageScore
         genres
         coverImage { extraLarge large }

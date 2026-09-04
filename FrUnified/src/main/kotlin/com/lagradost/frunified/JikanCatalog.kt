@@ -56,6 +56,24 @@ object JikanCatalog {
 
     fun item(data: JSONObject): CatalogItem? = toItem(data)
 
+    /**
+     * Nombre réel d'épisodes déjà sortis, pour les animés encore diffusés dont
+     * le champ `episodes` est nul (One Piece, Detective Conan…). On lit la
+     * dernière page de la liste d'épisodes : son dernier élément porte le
+     * numéro du plus récent épisode paru.
+     */
+    suspend fun airedEpisodeCount(id: String): Int? {
+        val first = fetch("anime/$id/episodes") ?: return null
+        val lastPage = first.optJSONObject("pagination")
+            ?.optInt("last_visible_page")?.takeIf { it > 0 } ?: 1
+        val page = if (lastPage > 1) fetch("anime/$id/episodes?page=$lastPage") else first
+        val arr = page?.optJSONArray("data") ?: return null
+        if (arr.length() == 0) return null
+        return (0 until arr.length())
+            .mapNotNull { arr.optJSONObject(it)?.optInt("mal_id")?.takeIf { n -> n > 0 } }
+            .maxOrNull()
+    }
+
     fun allTitles(data: JSONObject): List<String> {
         val base = listOf("title", "title_english", "title_japanese").mapNotNull {
             data.optString(it).takeIf { t -> t.isNotBlank() && t != "null" }

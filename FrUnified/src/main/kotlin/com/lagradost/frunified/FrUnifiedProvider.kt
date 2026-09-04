@@ -384,7 +384,15 @@ class FrUnifiedProvider : MainAPI() {
             }
         }
 
-        val count = media.optInt("episodes").takeIf { it > 0 } ?: 24
+        // Les animés en cours de diffusion (One Piece…) renvoient `episodes: null`
+        // sur AniList : sans ce repli, on n'affichait que 24 épisodes et les
+        // épisodes récents étaient tout simplement absents de la fiche.
+        val airing = media.optJSONObject("nextAiringEpisode")
+            ?.optInt("episode")?.takeIf { it > 1 }?.minus(1)
+        val count = media.optInt("episodes").takeIf { it > 0 }
+            ?: airing
+            ?: malId?.let { JikanCatalog.airedEpisodeCount(it.toString()) }
+            ?: 24
         val episodes = animeEpisodes(titles, item.year, count, anilistId = id.id.toIntOrNull(), malId = malId)
 
         return newAnimeLoadResponse(item.title, id.serialize(), TvType.Anime) {
@@ -442,7 +450,12 @@ class FrUnifiedProvider : MainAPI() {
             }
         }
 
-        val count = data.optInt("episodes").takeIf { it > 0 } ?: 24
+        // Même piège que sur AniList : un animé encore diffusé ("Currently
+        // Airing") a `episodes: null` chez Jikan. On garde alors une fiche
+        // large plutôt que de tronquer à 24 épisodes.
+        val count = data.optInt("episodes").takeIf { it > 0 }
+            ?: JikanCatalog.airedEpisodeCount(id.id)
+            ?: 24
         val episodes = animeEpisodes(titles, item.year, count, anilistId = null, malId = malId)
 
         return newAnimeLoadResponse(item.title, id.serialize(), TvType.Anime) {
