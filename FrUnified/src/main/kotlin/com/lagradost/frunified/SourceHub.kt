@@ -31,14 +31,68 @@ import java.util.concurrent.ConcurrentHashMap
  */
 object SourceHub {
 
-    // Réseau mobile (souvent lent) : des timeouts trop courts transformaient
-    // une simple lenteur en « 0 résultat » / « fiche introuvable ».
-    private const val SEARCH_TIMEOUT_MS = 35_000L
-    private const val LOAD_TIMEOUT_MS = 50_000L
-    private const val LINKS_TIMEOUT_MS = 100_000L
+    // Réseau mobile : assez large pour une simple lenteur, assez court pour
+    // qu'une extension morte ne fasse pas patienter sur toutes les autres.
+    private const val SEARCH_TIMEOUT_MS = 15_000L
+    private const val LOAD_TIMEOUT_MS = 20_000L
+    private const val LINKS_TIMEOUT_MS = 35_000L
 
     /** Sources à ignorer (méta-providers, doublons, agrégateurs). */
     private val BLACKLIST = setOf(FrUnifiedProvider.PROVIDER_NAME, "Multi", "MultiFR")
+
+    // ------------------------------------------------- quarantaine
+
+    /**
+     * Extensions momentanément écartées, et l'instant où elles seront réessayées.
+     *
+     * Une extension dont le site a changé de domaine ou qui tombe sur un écran
+     * Cloudflare ne renvoie pas du JSON mais du HTML : son parseur lève
+     * « Unexpected character » / « Expected a valid value ». Inutile de la
+     * réinterroger à chaque fiche — on l'écarte un moment pour que seules les
+     * sources vivantes soient utilisées.
+     */
+    private val quarantine = ConcurrentHashMap<String, Long>()
+
+    /** Panne franche (site mort / template changé) : 30 min. */
+    private const val QUARANTINE_MS = 30 * 60 * 1000L
+
+    /** Simple lenteur ou timeout : 5 min seulement, c'est peut-être passager. */
+    private const val QUARANTINE_SOFT_MS = 5 * 60 * 1000L
+
+    /**
+     * Signature d'une extension périmée : le site répond, mais pas ce que le
+     * code attend (HTML d'erreur, redirection, anti-bot…).
+     */
+    private fun isBrokenParse(message: String?): Boolean {
+        val m = (message ?: "").lowercase()
+        return m.contains("unexpected character") ||
+            m.contains("expected a valid value") ||
+            m.contains("unexpected json") ||
+            m.contains("json") && (m.contains("expected") || m.contains("unexpected")) ||
+            m.contains("not a json") ||
+            m.contains("end of input")
+    }
+
+    private fun quarantineFor(name: String, message: String?) {
+        val ms = if (isBrokenParse(message)) QUARANTINE_MS else QUARANTINE_SOFT_MS
+        quarantine[name] = System.currentTimeMillis() + ms
+    }
+
+    private fun isQuarantined(name: String): Boolean {
+        val until = quarantine[name] ?: return false
+        if (until > System.currentTimeMillis()) return true
+        quarantine.remove(name)
+        return false
+    }
+
+    /** Remet toutes les sources en jeu (bouton « Tester » et ouverture des réglages). */
+    fun clearQuarantine() = quarantine.clear()
+
+    /** Noms des extensions actuellement écartées (pour l'écran ⚙️). */
+    fun quarantinedNames(): List<String> {
+        val now = System.currentTimeMillis()
+        return quarantine.entries.filter { it.value > now }.map { it.key }.sorted()
+    }
 
     private val matchCache = ConcurrentHashMap<String, Pair<Long, String?>>()
     private const val MATCH_TTL_MS = 30 * 60 * 1000L
@@ -187,7 +241,13 @@ object SourceHub {
         }
 
         val url = best?.second
-        matchCache[cacheKey] = (now + MATCH_TTL_MS) to url
+        // On ne met en cache un ÉCHEC que s'il est « propre » (le site a
+        // répondu, mais sans correspondance). Un échec dû à une panne — site
+        // injoignable ou périmé — n'est pas mémorisé : sinon une extension
+        // réparée entre-temps resterait ignorée pendant 30 min.
+        if (url != null || lastSearchError == null) {
+            matchCache[cacheKey] = (now + MATCH_TTL_MS) to url
+        }
         return url to LocateInfo(results = totalResults, bestScore = best?.first ?: 0.0, searchError = lastSearchError)
     }
 
@@ -277,7 +337,9 @@ object SourceHub {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Int = coroutineScope {
-        val sources = activeSources()
+        // Les extensions en quarantaine (site mort / périmé) sont ignorées :
+        // elles ne consomment plus de temps d'attente à chaque lecture.
+        val sources = activeSources().filterNot { isQuarantined(it.name) }
         if (sources.isEmpty()) return@coroutineScope 0
 
         sources.map { api ->
@@ -301,8 +363,16 @@ object SourceHub {
         if (url == null) {
             lastErrors[api.name] = when {
                 info.directId -> "✗ fiche introuvable (ID direct)"
-                info.results == 0 && info.searchError != null ->
-                    "✗ fiche introuvable (recherche cassée: ${info.searchError})"
+                info.results == 0 && info.searchError != null -> {
+                    // « Unexpected character » / « Expected a valid value » : le
+                    // site ne renvoie plus du JSON → extension périmée, on l'écarte.
+                    quarantineFor(api.name, info.searchError)
+                    if (isBrokenParse(info.searchError)) {
+                        "✗ extension périmée (le site ne renvoie plus de données valides) — écartée 30 min"
+                    } else {
+                        "✗ fiche introuvable (recherche cassée: ${info.searchError})"
+                    }
+                }
                 info.results == 0 -> "✗ fiche introuvable (recherche: 0 résultat)"
                 else -> "✗ fiche introuvable (${info.results} résultats, score max ${"%.2f".format(info.bestScore)})"
             }
@@ -333,7 +403,13 @@ object SourceHub {
         lastErrors[api.name] = if (emitted) "✓ lien(s) émis" else "✓ 0 lien"
         emitted
     } catch (t: Throwable) {
-        lastErrors[api.name] = "✗ " + (t.message?.take(80) ?: t::class.simpleName.orEmpty())
+        val msg = t.message
+        quarantineFor(api.name, msg)
+        lastErrors[api.name] = if (isBrokenParse(msg)) {
+            "✗ extension périmée (le site ne renvoie plus de données valides) — écartée 30 min"
+        } else {
+            "✗ " + (msg?.take(80) ?: t::class.simpleName.orEmpty())
+        }
         false
     }
 
@@ -343,6 +419,10 @@ object SourceHub {
      */
     suspend fun testSource(name: String): String {
         val api = detectedSources().firstOrNull { it.name == name } ?: return "✗ extension introuvable"
+        // Un test doit TOUJOURS interroger le site pour de vrai : on lève la
+        // quarantaine et le cache d'appariement de cette source.
+        quarantine.remove(name)
+        matchCache.keys.filter { it.startsWith("$name|") }.forEach { matchCache.remove(it) }
         val isAnimeSource = runCatching {
             api.lang.lowercase().startsWith("fr") &&
                 (api.name.lowercase().contains("anime") || api.name.lowercase().contains("manga"))

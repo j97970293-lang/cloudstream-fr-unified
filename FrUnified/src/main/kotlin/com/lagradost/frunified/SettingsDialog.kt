@@ -331,6 +331,17 @@ object SettingsDialog {
                             "dans CloudStream — FR Unifié s'en sert comme sources de liens.",
                         12f, p.sub))
                 } else {
+                    // Extensions écartées automatiquement (site périmé) : on le
+                    // dit clairement, et on les remet en jeu à la fermeture.
+                    val ko = SourceHub.quarantinedNames()
+                    if (ko.isNotEmpty()) {
+                        sCs.addToBody(TextView(context).label(context,
+                            "⚠ Écartées automatiquement (le site ne renvoie plus de données " +
+                                "valides) : " + ko.joinToString(", ") + ".\n" +
+                                "Mettez-les à jour dans CloudStream, ou décochez-les. " +
+                                "Elles seront réessayées automatiquement.",
+                            11f, p.err))
+                    }
                     srcNames.addAll(sources.map { it.name })
                     sources.forEach { api ->
                         val row = LinearLayout(context).apply {
@@ -442,6 +453,9 @@ object SettingsDialog {
                 srcCheckboxes.forEachIndexed { index, box ->
                     srcNames.getOrNull(index)?.let { FrSettings.setSourceEnabled(it, box.isChecked) }
                 }
+                // L'utilisateur a pu mettre ses extensions à jour entre-temps :
+                // on remet toutes les sources en jeu.
+                runCatching { SourceHub.clearQuarantine() }
 
                 FrSettings.stremioUrls = stremioField.text.toString()
                     .split("\n", ",", " ")
