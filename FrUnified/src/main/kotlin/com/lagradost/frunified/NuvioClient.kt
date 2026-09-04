@@ -61,11 +61,25 @@ object NuvioClient {
      */
     private const val JS_STACK_BYTES = 32L * 1024 * 1024
 
+    /** Repli si 32 Mo ne suffisent pas (bundle pathologiquement imbriqué). */
+    private const val JS_STACK_BYTES_XL = 256L * 1024 * 1024
+
     /**
      * Exécute [block] sur un thread dédié à grande pile et rend son résultat.
-     * Toute exception (y compris [StackOverflowError]) est propagée à l'appelant.
+     *
+     * En cas de [StackOverflowError], une seconde tentative est faite avec une
+     * pile de 256 Mo : la mémoire est *virtuelle* (réservation d'adresses), les
+     * pages ne sont engagées qu'à mesure de l'utilisation réelle.
+     * Toute autre exception est propagée telle quelle.
      */
-    private fun <T> withBigStack(name: String, block: () -> T): T {
+    private fun <T> withBigStack(name: String, block: () -> T): T =
+        try {
+            runOnStack(name, JS_STACK_BYTES, block)
+        } catch (t: StackOverflowError) {
+            runOnStack("$name-xl", JS_STACK_BYTES_XL, block)
+        }
+
+    private fun <T> runOnStack(name: String, stackBytes: Long, block: () -> T): T {
         val result = java.util.concurrent.atomic.AtomicReference<Any?>(null)
         val error = java.util.concurrent.atomic.AtomicReference<Throwable?>(null)
         val thread = Thread(null, {
@@ -75,14 +89,14 @@ object NuvioClient {
                 // StackOverflowError inclus : on le remonte au lieu de tuer le thread
                 error.set(t)
             }
-        }, "nuvio-js-$name", JS_STACK_BYTES)
+        }, "nuvio-js-$name", stackBytes)
         thread.isDaemon = true
         thread.start()
         // Borne dure : un bundle parti en boucle infinie ne doit pas retenir
         // l'appelant. Le thread est daemon, il n'empêchera pas l'arrêt du process.
         thread.join(SCRAPER_TIMEOUT_MS)
         if (thread.isAlive) {
-            runCatching { @Suppress("DEPRECATION") thread.interrupt() }
+            runCatching { thread.interrupt() }
             throw java.util.concurrent.TimeoutException("délai dépassé")
         }
         error.get()?.let { throw it }
@@ -259,11 +273,19 @@ object NuvioClient {
     @Volatile
     private var engineError: String? = null
 
-    /** Bandeau de diagnostic : « OK » ou la raison exacte du dernier échec. */
-    fun engineStatus(): String {
-        val err = engineError
-        if (err != null) return "✗ moteur : $err"
-        return runCatching {
+    /** Marqueur de build : permet de vérifier d'un coup d'œil la version installée. */
+    const val ENGINE_BUILD = "v14"
+
+    /**
+     * Mesure la profondeur de récursion JS réellement disponible.
+     *
+     * C'est LE chiffre qui tranche : sur la pile de 1 Mo d'un thread Android on
+     * plafonne à quelques milliers de niveaux ; sur les 32 Mo de [withBigStack]
+     * on dépasse largement 100 000. Si le bandeau affiche une petite valeur,
+     * c'est que l'ancien code tourne encore (mise à jour non prise en compte).
+     */
+    private fun measureJsDepth(): Int = runCatching {
+        withBigStack("selftest") {
             val cx = RhinoContext.enter()
             try {
                 cx.optimizationLevel = -1
@@ -272,17 +294,44 @@ object NuvioClient {
                 installRuntime(cx, scope)
                 val probe = cx.evaluateString(
                     scope,
-                    "(typeof RegExp === 'function') && /^a(b+)c$/.test('abbbc') && " +
-                        "(function(){ try { null.x; return false; } catch (e) { return String(e).length > 0; } })()",
-                    "selftest", 1, null
+                    "(function(){var d=0;function r(){d++;r();}try{r();}catch(e){}return d;})()",
+                    "depth", 1, null
                 )
-                val ok = RhinoContext.toBoolean(probe)
-                if (ok) "✓ moteur Rhino opérationnel (RegExp + messages)"
-                else "✗ auto-test JS négatif"
+                RhinoContext.toNumber(probe).toInt()
             } finally {
                 RhinoContext.exit()
             }
-        }.getOrElse { t -> "✗ moteur : " + (t.message?.take(120) ?: t::class.simpleName.orEmpty()) }
+        }
+    }.getOrDefault(-1)
+
+    /** Bandeau de diagnostic : « OK » ou la raison exacte du dernier échec. */
+    fun engineStatus(): String {
+        val err = engineError
+        if (err != null) return "✗ moteur $ENGINE_BUILD : $err"
+        return runCatching {
+            // L'auto-test tourne sur le thread à grande pile, comme les scrapeurs.
+            val ok = withBigStack("selftest") {
+                val cx = RhinoContext.enter()
+                try {
+                    cx.optimizationLevel = -1
+                    cx.languageVersion = RhinoContext.VERSION_ES6
+                    val scope = cx.initStandardObjects(com.frunified.rhino.TopLevel())
+                    installRuntime(cx, scope)
+                    val probe = cx.evaluateString(
+                        scope,
+                        "(typeof RegExp === 'function') && /^a(b+)c$/.test('abbbc') && " +
+                            "(function(){ try { null.x; return false; } catch (e) { return String(e).length > 0; } })()",
+                        "selftest", 1, null
+                    )
+                    RhinoContext.toBoolean(probe)
+                } finally {
+                    RhinoContext.exit()
+                }
+            }
+            val depth = measureJsDepth()
+            if (ok) "✓ moteur Rhino $ENGINE_BUILD · pile JS : $depth niveaux"
+            else "✗ auto-test JS négatif ($ENGINE_BUILD)"
+        }.getOrElse { t -> "✗ moteur $ENGINE_BUILD : " + (t.message?.take(120) ?: t::class.simpleName.orEmpty()) }
     }
 
     /**
@@ -412,6 +461,9 @@ object NuvioClient {
 
                 try {
                     cx.evaluateString(scope, code, scraper.id, 1, null)
+                } catch (t: StackOverflowError) {
+                    // Laisse withBigStack réessayer avec une pile plus grande.
+                    throw t
                 } catch (t: Throwable) {
                     lastResults[scraper.id] = "✗ erreur JS : " + jsError(code, t) + diagSuffix(scraper.id)
                     return@withBigStack null
@@ -440,6 +492,8 @@ object NuvioClient {
 
                 var result: Any? = try {
                     (fn as com.frunified.rhino.Callable).call(cx, scope, scope, args)
+                } catch (t: StackOverflowError) {
+                    throw t
                 } catch (t: Throwable) {
                     lastResults[scraper.id] = "✗ appel : " + jsError(code, t) + diagSuffix(scraper.id)
                     return@withBigStack null
@@ -484,6 +538,8 @@ object NuvioClient {
                     out += readStream(obj) ?: continue
                 }
                 out
+            } catch (t: StackOverflowError) {
+                throw t
             } catch (t: Throwable) {
                 // un scrapeur qui plante ne doit jamais faire planter la lecture
                 lastResults[scraper.id] = "✗ interne: " + (t.message?.take(80) ?: t::class.simpleName.orEmpty()) + diagSuffix(scraper.id)
@@ -496,7 +552,9 @@ object NuvioClient {
             }
         } catch (t: Throwable) {
             val why = if (t is StackOverflowError) {
-                "pile insuffisante (bundle trop imbriqué)"
+                // 32 Mo PUIS 256 Mo ont débordé : le message mentionne la pile
+                // tentée, impossible de le confondre avec l'ancien « 1037KB ».
+                "pile 256 Mo dépassée (bundle trop imbriqué) [$ENGINE_BUILD]"
             } else (t.message?.take(80) ?: t::class.simpleName.orEmpty())
             lastResults[scraper.id] = "✗ interne: " + why + diagSuffix(scraper.id)
             currentScraper.remove()
