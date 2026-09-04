@@ -15,6 +15,7 @@ object FrSettings {
     private const val KEY_DISABLED = "disabled_sources"
     private const val KEY_STREMIO = "stremio_urls"
     private const val KEY_USE_LOCAL = "use_local_sources"
+    private const val KEY_SHOW_ALL_SOURCES = "show_all_sources"
     private const val KEY_USE_STREMIO = "use_stremio"
     private const val KEY_USE_SUBS = "use_subtitles"
     private const val KEY_SUB_LANGS = "subtitle_langs"
@@ -75,6 +76,15 @@ object FrSettings {
     var useLocalSources: Boolean
         get() = readBool(KEY_USE_LOCAL, true)
         set(value) = writeBool(KEY_USE_LOCAL, value)
+
+    /**
+     * Afficher dans l'écran ⚙️ toutes les extensions installées, y compris
+     * celles qui ne se déclarent pas françaises (dépannage : une extension
+     * attendue reste introuvable dans la liste filtrée).
+     */
+    var showAllSources: Boolean
+        get() = readBool(KEY_SHOW_ALL_SOURCES, false)
+        set(value) = writeBool(KEY_SHOW_ALL_SOURCES, value)
 
     /** Utiliser les addons Stremio configurés. */
     var useStremio: Boolean

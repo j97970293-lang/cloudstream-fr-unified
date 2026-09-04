@@ -19,6 +19,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.Switch
 import android.widget.TextView
+import android.widget.Toast
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
@@ -328,8 +329,27 @@ object SettingsDialog {
                 "$on / ${srcNames.size} activées" + if (ko > 0) "  ·  $ko hors service" else ""
             )
         }
+        // Case de dépannage : si une extension installée n'apparaît pas dans la
+        // liste (elle ne se déclare pas « fr »), on affiche tout.
+        val showAllBox = CheckBox(context).apply {
+            text = "Afficher toutes les extensions installées (même non FR)"
+            isChecked = FrSettings.showAllSources
+            setTextColor(p.sub)
+            textSize = 12f
+            setOnCheckedChangeListener { _, v ->
+                FrSettings.showAllSources = v
+                Toast.makeText(
+                    context,
+                    "Rouvrez les réglages pour actualiser la liste.",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+        sCs.addToBody(showAllBox)
+
         GlobalScope.launch {
-            val sources = SourceHub.detectedSources()
+            val sources = if (FrSettings.showAllSources)
+                SourceHub.allInstalledSources() else SourceHub.detectedSources()
             withContext(Dispatchers.Main) {
                 if (csContainer.childCount > 0 && csContainer.getChildAt(0) is TextView) {
                     (csContainer.getChildAt(0) as TextView).text = ""

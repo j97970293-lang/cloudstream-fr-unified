@@ -126,14 +126,45 @@ object SourceHub {
         return found.toList()
     }
 
+    /**
+     * Indices de « francité » pour les extensions qui ne se déclarent pas en
+     * `fr` (certaines annoncent `en`, `universal` ou rien du tout alors qu'elles
+     * ne servent que du contenu français : FrenchHub, FrenchStream, Frembed…).
+     * Sans ce repli, elles disparaissaient purement et simplement de l'écran ⚙️.
+     */
+    private val FR_HINTS = listOf(
+        "french", "frenchhub", "frenchub", "fr-", "vostfr", "vf",
+        "wiflix", "coflix", "flemmix", "movix", "frembed", "fstv", "karma",
+        "darkiworld", "zone", "anime-sama", "animesama", "voiranime", "mugiwara",
+        "papadustream", "empire", "streaming", "serie", "film"
+    )
+
+    private fun looksFrench(api: MainAPI): Boolean = runCatching {
+        val lang = api.lang.lowercase()
+        if (lang.startsWith("fr")) return true
+        // Une extension explicitement rattachée à une autre langue reste exclue.
+        if (lang.isNotBlank() && lang != "universal" && lang != "un" && lang != "en") return false
+        val haystack = (api.name + " " + api.mainUrl).lowercase()
+        FR_HINTS.any { haystack.contains(it) }
+    }.getOrDefault(false)
+
     /** Toutes les extensions françaises installées (avant filtrage utilisateur). */
     fun detectedSources(): List<MainAPI> = runCatching {
         providersByReflection()
             .distinctBy { it.name }
-            .filter { api ->
-                api.name !in BLACKLIST &&
-                    runCatching { api.lang.lowercase().startsWith("fr") }.getOrDefault(false)
-            }
+            .filter { api -> api.name !in BLACKLIST && looksFrench(api) }
+            .sortedBy { it.name.lowercase() }
+    }.getOrDefault(emptyList())
+
+    /**
+     * Toutes les extensions installées, quelle que soit leur langue : sert au
+     * mode « tout afficher » de l'écran ⚙️ quand une extension attendue reste
+     * introuvable dans la liste filtrée.
+     */
+    fun allInstalledSources(): List<MainAPI> = runCatching {
+        providersByReflection()
+            .distinctBy { it.name }
+            .filter { it.name !in BLACKLIST }
             .sortedBy { it.name.lowercase() }
     }.getOrDefault(emptyList())
 
