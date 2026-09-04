@@ -1,10 +1,10 @@
 [
     {
         "iconUrl": "https://raw.githubusercontent.com/j97970293-lang/cloudstream-fr-unified/master/icon.png",
-        "fileHash": "sha256-e3177b8ce0bfa5e28b4cfce8bf88c378a27af51cf0118c563609b0bcf543da19",
+        "fileHash": "sha256-2cec964051ce9a24ead56ac9bc714ea914236f0a898adb4a8083ed2120a50fb6",
         "apiVersion": 1,
         "repositoryUrl": "https://github.com/j97970293-lang/cloudstream-fr-unified",
-        "fileSize": 846618,
+        "fileSize": 117553,
         "status": 1,
         "language": "fr",
         "authors": [
@@ -17,9 +17,9 @@
             "AnimeMovie",
             "Cartoon"
         ],
-        "version": 15,
+        "version": 16,
         "internalName": "FrUnified",
-        "description": "Catalogue unique FR (TMDB + AniList) : une seule extension qui agr\u00e8ge la recherche et les liens de toutes les extensions fran\u00e7aises install\u00e9es (French-Stream, Movix, Wiflix, FrenchAnime, Frembed, FSTV, Karma\u2026) et des scrapeurs Nuvio (Gowaru, z7kx, Phisher \u2014 engine Rhino patch\u00e9, RegExp et messages embarqu\u00e9s pour Android, serveurs VF/1080 prioritaires, limite par source, d\u00e9p\u00f4ts installables et r\u00e9glables \u2699\ufe0f). Addons Stremio (Torrentio, Comet, debrid), sous-titres et bandes-annonces.",
+        "description": "Catalogue unique FR (TMDB + AniList) : une seule extension qui agr\u00e8ge la recherche et les liens de toutes les extensions fran\u00e7aises install\u00e9es (French-Stream, Movix, Wiflix, FrenchAnime, Frembed, FSTV, Karma\u2026). Addons Stremio (Torrentio, Comet, debrid), sous-titres et bandes-annonces.",
         "url": "https://raw.githubusercontent.com/j97970293-lang/cloudstream-fr-unified/builds/FrUnified.cs3",
         "name": "FrUnified"
     }
