@@ -46,15 +46,6 @@ import org.json.JSONObject
  */
 private const val LOG_TAG = "FrUnified"
 
-/**
- * Budget total des scrapeurs Nuvio.
- *
- * Ramené de 3 min à 75 s : les liens étant désormais transmis au fil de l'eau,
- * ce délai ne borne plus que les scrapeurs les plus lents — les premiers
- * serveurs s'affichent en quelques secondes.
- */
-private const val NUVIO_TOTAL_TIMEOUT_MS = 75_000L
-
 class FrUnifiedProvider : MainAPI() {
 
     override var mainUrl = "https://www.themoviedb.org"
@@ -525,38 +516,7 @@ class FrUnifiedProvider : MainAPI() {
             }
         }
 
-        // 3. Scrapeurs Nuvio (plugins locaux du projet Nuvio : Gowaru FR…)
-        if (FrSettings.useNuvio) {
-            linkJobs += async {
-                runCatching {
-                    // Les liens sont transmis au lecteur DÈS QU'ILS ARRIVENT.
-                    // Auparavant ils étaient accumulés puis triés, donc rien ne
-                    // s'affichait tant que les 26 scrapeurs n'avaient pas fini :
-                    // jusqu'à 3 min d'écran vide même quand le 1er serveur avait
-                    // déjà répondu.
-                    val seen = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
-                    var any = false
-                    val ok = withTimeoutOrNull(NUVIO_TOTAL_TIMEOUT_MS) {
-                        NuvioClient.streams(payload) { link ->
-                            // Dédoublonnage : plusieurs scrapeurs partagent les
-                            // mêmes hébergeurs (sibnet, vidmoly…).
-                            if (seen.putIfAbsent(link.url, true) == null) {
-                                any = true
-                                callback(link)
-                            }
-                        }
-                    } ?: false
-
-                    // Diagnostic : ne jamais avaler une erreur sans trace
-                    NuvioClient.diagnostics().toSortedMap().forEach { (id, status) ->
-                        Log.i(LOG_TAG, "[Nuvio] $id → $status")
-                    }
-                    ok || any
-                }.getOrDefault(false)
-            }
-        }
-
-        // 4. Sous-titres externes (n'entrent pas dans le décompte des liens)
+        // 3. Sous-titres externes (n'entrent pas dans le décompte des liens)
         if (FrSettings.useSubtitles) {
             (FrSettings.stremioUrls + FrSettings.DEFAULT_SUBTITLE_ADDON).distinct().forEach { addon ->
                 sideJobs += async {

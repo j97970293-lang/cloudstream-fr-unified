@@ -18,43 +18,16 @@ object FrSettings {
     private const val KEY_USE_STREMIO = "use_stremio"
     private const val KEY_USE_SUBS = "use_subtitles"
     private const val KEY_SUB_LANGS = "subtitle_langs"
-    private const val KEY_USE_NUVIO = "use_nuvio"
-    private const val KEY_NUVIO_REPOS = "nuvio_repos"
-    private const val KEY_NUVIO_DISABLED = "nuvio_disabled"
-    private const val KEY_NUVIO_ALL = "nuvio_all_langs"
-    private const val KEY_NUVIO_REPOS_DISABLED = "nuvio_repos_disabled"
-    private const val KEY_NUVIO_MAX = "nuvio_max_per_scraper"
-    private const val KEY_NUVIO_PRIORITY = "nuvio_priority_patterns"
-    private const val KEY_NUVIO_ORDER = "nuvio_order"
-    private const val KEY_NUVIO_CONCURRENCY = "nuvio_concurrency"
-    private const val KEY_NUVIO_REMOVED = "nuvio_repos_removed"
     private const val KEY_TMDB = "tmdb_api_key"
     private const val KEY_TOKENS = "api_tokens"
-    private const val KEY_UA = "nuvio_ua"
-    private const val KEY_REFERER = "nuvio_referer"
-    private const val KEY_COOKIES = "nuvio_cookies"
     private const val KEY_USE_TMDB = "use_tmdb_catalog"
     private const val KEY_USE_ANIME = "use_anime_catalog"
 
     /** Addon de sous-titres Stremio gratuit et sans clé, activé par défaut. */
     const val DEFAULT_SUBTITLE_ADDON = "https://opensubtitles-v3.strem.io"
 
-    /** Dépôts Nuvio proposés au premier lancement (jamais réappliqués ensuite). */
-    val DEFAULT_NUVIO_REPOS = listOf(
-        "https://raw.githubusercontent.com/Gowaru/gowaru-nuvio-providers/refs/heads/main/manifest.json",
-        "https://raw.githubusercontent.com/z7kx/z7kx-nuvio-provider/refs/heads/main/manifest.json",
-        "https://raw.githubusercontent.com/phisher98/phisher-nuvio-providers/refs/heads/main/manifest.json"
-    )
-
-    /** Motifs prioritaires par défaut (titre des liens). */
-    val DEFAULT_NUVIO_PRIORITY = listOf("VF", "FRENCH", "VOSTFR", "1080", "HD")
-
-    /** Clé TMDB utilisée par le catalogue ET par le repli de recherche des bundles. */
+    /** Clé TMDB utilisée par le catalogue. */
     const val DEFAULT_TMDB_KEY = "f3d757824f08ea2cff45eb8f47ca3a1e"
-
-    const val DEFAULT_USER_AGENT =
-        "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 " +
-            "(KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36"
 
     @Volatile
     private var prefs: SharedPreferences? = null
@@ -68,7 +41,6 @@ object FrSettings {
                 context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             }.getOrNull()
         }
-        seedNuvioRepos()
     }
 
     /**
@@ -76,38 +48,6 @@ object FrSettings {
      * Ensuite l'utilisateur peut les modifier/supprimer librement : les URLs ne
      * sont jamais « réinjectées » par le code (dépôts installables).
      */
-    private fun seedNuvioRepos() {
-        val raw = runCatching { prefs?.getString(KEY_NUVIO_REPOS, null) }.getOrNull()
-        val prio = runCatching { prefs?.getString(KEY_NUVIO_PRIORITY, null) }.getOrNull()
-        if (prio == null) {
-            write(KEY_NUVIO_PRIORITY, DEFAULT_NUVIO_PRIORITY.joinToString(","))
-        }
-        if (raw == null) {
-            // Premier lancement : installe les dépôts par défaut.
-            write(KEY_NUVIO_REPOS, DEFAULT_NUVIO_REPOS.joinToString("\n"))
-        } else {
-            // Mise à niveau : propose les nouveaux dépôts par défaut (z7kx…)
-            // sans réinjecter ceux que l'utilisateur a explicitement retirés.
-            val current = raw.split("\n").map { it.trim() }.filter { it.isNotBlank() }.toMutableList()
-            val removed = read(KEY_NUVIO_REMOVED, "").split("\n").map { it.trim() }
-                .filter { it.isNotBlank() }.toSet()
-            var changed = false
-            for (repo in DEFAULT_NUVIO_REPOS) {
-                if (repo !in current && repo !in removed) {
-                    current.add(repo)
-                    changed = true
-                }
-            }
-            if (changed) write(KEY_NUVIO_REPOS, current.joinToString("\n"))
-        }
-    }
-
-    /** Dépôts par défaut retirés par l'utilisateur (pour ne pas les réinjecter). */
-    var nuvioRemovedDefaults: Set<String>
-        get() = read(KEY_NUVIO_REMOVED, "").split("\n").map { it.trim() }
-            .filter { it.isNotBlank() }.toSet()
-        set(value) = write(KEY_NUVIO_REMOVED, value.joinToString("\n"))
-
     private fun read(key: String, default: String): String =
         runCatching { prefs?.getString(key, null) }.getOrNull() ?: memory[key] ?: default
 
@@ -158,76 +98,14 @@ object FrSettings {
         disabledSources = if (enabled) disabledSources - name else disabledSources + name
     }
 
-    // ------------------------------------------------------------- Nuvio
-
-    /** Utiliser les scrapeurs Nuvio (plugins locaux) comme sources de liens. */
-    var useNuvio: Boolean
-        get() = readBool(KEY_USE_NUVIO, true)
-        set(value) = writeBool(KEY_USE_NUVIO, value)
-
-    /** URLs des dépôts de scrapeurs Nuvio (manifest.json), une par ligne. */
-    var nuvioRepos: List<String>
-        get() = read(KEY_NUVIO_REPOS, "").split("\n").map { it.trim() }
-            .filter { it.isNotBlank() }
-        set(value) = write(KEY_NUVIO_REPOS, value.joinToString("\n"))
-
-    /** Dépôts Nuvio désactivés (URLs complètes), une par ligne. */
-    var nuvioReposDisabled: Set<String>
-        get() = read(KEY_NUVIO_REPOS_DISABLED, "").split("\n").map { it.trim() }
-            .filter { it.isNotBlank() }.toSet()
-        set(value) = write(KEY_NUVIO_REPOS_DISABLED, value.joinToString("\n"))
-
-    fun isNuvioRepoEnabled(repo: String): Boolean = repo.trim() !in nuvioReposDisabled
-
-    fun setNuvioRepoEnabled(repo: String, enabled: Boolean) {
-        val r = repo.trim()
-        nuvioReposDisabled = if (enabled) nuvioReposDisabled - r else nuvioReposDisabled + r
-    }
-
-    /** Limite de serveurs par scrapeur (0 = pas de limite). */
-    var nuvioMaxPerScraper: Int
-        get() = read(KEY_NUVIO_MAX, "12").toIntOrNull() ?: 12
-        set(value) = write(KEY_NUVIO_MAX, value.coerceIn(0, 200).toString())
-
-    /** Motifs prioritaires (titre du lien contient le motif, insensible à la casse). */
-    var nuvioPriorityPatterns: List<String>
-        get() = read(KEY_NUVIO_PRIORITY, "").split(",").map { it.trim().uppercase() }
-            .filter { it.isNotBlank() }
-        set(value) = write(KEY_NUVIO_PRIORITY, value.joinToString(","))
-
-    /** Ordre manuel des scrapeurs (IDs, un par ligne ; les absents restent triés). */
-    var nuvioOrder: List<String>
-        get() = read(KEY_NUVIO_ORDER, "").split("\n").map { it.trim() }
-            .filter { it.isNotBlank() }
-        set(value) = write(KEY_NUVIO_ORDER, value.joinToString("\n"))
-
-    /** Scrapeurs Nuvio désactivés par l'utilisateur. */
-    var nuvioDisabled: Set<String>
-        get() = read(KEY_NUVIO_DISABLED, "").split("\n").filter { it.isNotBlank() }.toSet()
-        set(value) = write(KEY_NUVIO_DISABLED, value.joinToString("\n"))
-
-    /** Afficher aussi les scrapeurs Nuvio non français (EN, TR…) ou seulement les FR. */
-    var nuvioAllLangs: Boolean
-        get() = readBool(KEY_NUVIO_ALL, false)
-        set(value) = writeBool(KEY_NUVIO_ALL, value)
-
-    /** Nombre de scrapeurs exécutés en parallèle. */
-    var nuvioConcurrency: Int
-        get() = read(KEY_NUVIO_CONCURRENCY, "6").toIntOrNull()?.coerceIn(1, 12) ?: 6
-        set(value) = write(KEY_NUVIO_CONCURRENCY, value.coerceIn(1, 12).toString())
-
     // ---------------------------------------------------- API et réseau
 
-    /** Clé API TMDB (catalogue + repli des bundles Nuvio). */
+    /** Clé API TMDB (catalogue films/séries). */
     var tmdbApiKey: String
         get() = read(KEY_TMDB, DEFAULT_TMDB_KEY).trim().ifBlank { DEFAULT_TMDB_KEY }
         set(value) = write(KEY_TMDB, value.trim())
 
-    /**
-     * Clés API supplémentaires, une par ligne au format CLE=valeur.
-     * Injectées dans `process.env` de l'environnement JavaScript : les bundles
-     * Nuvio lisent leurs clés comme NUVIO_XXX_API_KEY…
-     */
+    /** Clés API supplémentaires, une par ligne au format CLE=valeur. */
     var apiTokens: Map<String, String>
         get() = read(KEY_TOKENS, "").split("\n").map { it.trim() }
             .filter { it.contains("=") }
@@ -236,21 +114,6 @@ object FrSettings {
                 line.substring(0, i).trim().uppercase() to line.substring(i + 1).trim()
             }
         set(value) = write(KEY_TOKENS, value.entries.joinToString("\n") { "${it.key}=${it.value}" })
-
-    /** User-Agent appliqué aux requêtes des scrapeurs Nuvio. */
-    var nuvioUserAgent: String
-        get() = read(KEY_UA, DEFAULT_USER_AGENT)
-        set(value) = write(KEY_UA, value.trim())
-
-    /** Referer par défaut des requêtes Nuvio (vide = celui du bundle). */
-    var nuvioReferer: String
-        get() = read(KEY_REFERER, "https://www.google.com/")
-        set(value) = write(KEY_REFERER, value.trim())
-
-    /** Cookies par défaut des requêtes Nuvio (contournement Cloudflare). */
-    var nuvioCookies: String
-        get() = read(KEY_COOKIES, "")
-        set(value) = write(KEY_COOKIES, value.trim())
 
     // ---------------------------------------------------- catalogues
 
@@ -263,10 +126,4 @@ object FrSettings {
     var useAnimeCatalog: Boolean
         get() = readBool(KEY_USE_ANIME, true)
         set(value) = writeBool(KEY_USE_ANIME, value)
-
-    fun isNuvioEnabled(id: String): Boolean = id !in nuvioDisabled
-
-    fun setNuvioEnabled(id: String, enabled: Boolean) {
-        nuvioDisabled = if (enabled) nuvioDisabled - id else nuvioDisabled + id
-    }
 }

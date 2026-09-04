@@ -244,7 +244,7 @@ object SettingsDialog {
 
         // ================================================== 1. Scraping
         val sScraping = Section(context, Color.parseColor(ACCENTS[0]), "⚙️",
-            "Réglages de scraping", "Sources de liens, limite et priorités", p)
+            "Réglages de scraping", "Sources de liens", p)
         val localSwitch = Switch(context).apply {
             text = "Extensions FR installées"
             isChecked = FrSettings.useLocalSources
@@ -255,102 +255,15 @@ object SettingsDialog {
             isChecked = FrSettings.useStremio
             setTextColor(p.title)
         }
-        val nuvioSwitch = Switch(context).apply {
-            text = "Scrapeurs Nuvio (Gowaru, z7kx…)"
-            isChecked = FrSettings.useNuvio
-            setTextColor(p.title)
-        }
-        val nuvioAllSwitch = Switch(context).apply {
-            text = "Tous les scrapeurs Nuvio (pas seulement FR)"
-            isChecked = FrSettings.nuvioAllLangs
-            setTextColor(p.title)
-        }
         val subsSwitch = Switch(context).apply {
             text = "Sous-titres externes (OpenSubtitles)"
             isChecked = FrSettings.useSubtitles
             setTextColor(p.title)
         }
-        val concurrencyField = EditText(context).apply {
-            setText(FrSettings.nuvioConcurrency.toString())
-            inputType = InputType.TYPE_CLASS_NUMBER
-        }.box(context, p)
-        val maxField = EditText(context).apply {
-            setText(FrSettings.nuvioMaxPerScraper.toString())
-            inputType = InputType.TYPE_CLASS_NUMBER
-        }.box(context, p)
-        val priorityField = EditText(context).apply {
-            setText(FrSettings.nuvioPriorityPatterns.joinToString(", "))
-            inputType = InputType.TYPE_CLASS_TEXT
-        }.box(context, p)
-        val orderField = EditText(context).apply {
-            setText(FrSettings.nuvioOrder.joinToString("\n"))
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
-            minLines = 2
-            setHorizontallyScrolling(false)
-        }.box(context, p)
         sScraping.addToBody(localSwitch)
         sScraping.addToBody(stremioSwitch)
-        sScraping.addToBody(nuvioSwitch)
-        sScraping.addToBody(nuvioAllSwitch)
-        // Bandeau de diagnostic : indique immédiatement si le moteur JavaScript
-        // tourne sur cet appareil (RegExp + messages Rhino) ou pourquoi il échoue.
-        val engineBanner = TextView(context).label(context,
-            "Moteur Rhino : test en cours…", 12f, p.sub)
-        sScraping.addToBody(engineBanner)
-        GlobalScope.launch {
-            val status = runCatching { NuvioClient.engineStatus() }
-                .getOrElse { t -> "✗ moteur : " + (t.message?.take(120) ?: t::class.simpleName.orEmpty()) }
-            withContext(Dispatchers.Main) {
-                engineBanner.text = status
-                engineBanner.setTextColor(if (status.startsWith("✓")) p.ok else p.err)
-            }
-        }
         sScraping.addToBody(subsSwitch)
-        sScraping.addToBody(TextView(context).label(context,
-            "Sources lancées en parallèle (1–12)", 12f, p.sub).apply { setPadding(0, context.dp(10), 0, context.dp(2)) })
-        sScraping.addToBody(concurrencyField)
-        sScraping.addToBody(TextView(context).label(context,
-            "Serveurs max par source (0 = illimité)", 12f, p.sub).apply { setPadding(0, context.dp(8), 0, context.dp(2)) })
-        sScraping.addToBody(maxField)
-        sScraping.addToBody(TextView(context).label(context,
-            "Serveurs prioritaires en tête (motifs, séparés par des virgules)\n" +
-                "Ex. : VF, FRENCH, VOSTFR, 1080, FHD, HD", 12f, p.sub).apply { setPadding(0, context.dp(8), 0, context.dp(2)) })
-        sScraping.addToBody(priorityField)
-        sScraping.addToBody(TextView(context).label(context,
-            "Ordre personnalisé des sources : un ID par ligne", 12f, p.sub).apply { setPadding(0, context.dp(8), 0, context.dp(2)) })
-        sScraping.addToBody(orderField)
         root.addView(sScraping)
-
-        // ================================================== 2. Cloudflare
-        val sCf = Section(context, Color.parseColor(ACCENTS[1]), "🌐",
-            "Contournement Cloudflare", "User-Agent, référent et cookies (optionnel)", p)
-        val uaField = EditText(context).apply {
-            setText(FrSettings.nuvioUserAgent)
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
-            minLines = 2
-        }.box(context, p)
-        val refField = EditText(context).apply {
-            setText(FrSettings.nuvioReferer)
-            inputType = InputType.TYPE_CLASS_TEXT
-        }.box(context, p)
-        val cookiesField = EditText(context).apply {
-            setText(FrSettings.nuvioCookies)
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
-            minLines = 2
-        }.box(context, p)
-        sCf.addToBody(TextView(context).label(context,
-            "User-Agent envoyé aux sites (défaut : Chrome Android)", 12f, p.sub))
-        sCf.addToBody(uaField)
-        sCf.addToBody(TextView(context).label(context, "Referer par défaut", 12f, p.sub).apply {
-            setPadding(0, context.dp(8), 0, context.dp(2))
-        })
-        sCf.addToBody(refField)
-        sCf.addToBody(TextView(context).label(context,
-            "Cookies (ex. : cf_clearance=…; …) — vide par défaut", 12f, p.sub).apply {
-            setPadding(0, context.dp(8), 0, context.dp(2))
-        })
-        sCf.addToBody(cookiesField)
-        root.addView(sCf)
 
         // ================================================== 3. Clés API
         val sApi = Section(context, Color.parseColor(ACCENTS[2]), "🔑",
@@ -370,7 +283,7 @@ object SettingsDialog {
         sApi.addToBody(tmdbField)
         sApi.addToBody(TextView(context).label(context,
             "Clés fournisseurs : une par ligne au format CLE=valeur.\n" +
-                "Injectées dans process.env des scrapeurs Nuvio (ex. : NUVIO_MOVIX_API_KEY=xxx)",
+                "Clés API supplémentaires, une par ligne (CLE=valeur)",
             12f, p.sub).apply { setPadding(0, context.dp(8), 0, context.dp(2)) })
         sApi.addToBody(tokensField)
         root.addView(sApi)
@@ -391,104 +304,6 @@ object SettingsDialog {
         sCat.addToBody(tmdbCatSwitch)
         sCat.addToBody(animeCatSwitch)
         root.addView(sCat)
-
-        // ================================================== 5. Fournisseurs
-        val sProv = Section(context, Color.parseColor(ACCENTS[4]), "🎬",
-            "Fournisseurs", "Serveurs Nuvio activés", p)
-        val provContainer = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
-        sProv.addToBody(TextView(context).label(context,
-            "Chargement des serveurs Nuvio…", 12f, p.sub))
-        sProv.addToBody(provContainer)
-
-        val nuvioScrapers = mutableListOf<NuvioClient.NuvioScraper>()
-        val provCheckboxes = mutableListOf<CheckBox>()
-        val provResults = mutableMapOf<CheckBox, TextView>()
-        fun refreshProvCount() {
-            val on = provCheckboxes.count { it.isChecked }
-            sProv.setSummary("$on / ${nuvioScrapers.size} activés")
-        }
-
-        GlobalScope.launch {
-            val scrapers = runCatching { NuvioClient.scrapers() }.getOrDefault(emptyList())
-            withContext(Dispatchers.Main) {
-                // retire le message « Chargement »
-                if (provContainer.childCount > 0 && provContainer.getChildAt(0) is TextView) {
-                    (provContainer.getChildAt(0) as TextView).text = ""
-                }
-                if (scrapers.isEmpty()) {
-                    sProv.addToBody(TextView(context).label(context,
-                        "Aucun serveur trouvé : vérifiez les dépôts ci-dessous.", 12f, p.sub))
-                } else {
-                    nuvioScrapers.addAll(scrapers)
-                    scrapers.forEach { scraper ->
-                        val row = LinearLayout(context).apply {
-                            orientation = LinearLayout.HORIZONTAL
-                            gravity = Gravity.CENTER_VERTICAL
-                        }
-                        val box = CheckBox(context).apply {
-                            text = scraper.name +
-                                (if (scraper.isFrench) "" else "  ·  ${scraper.contentLanguage.joinToString("/")}") +
-                                "  ·  ${scraper.supportedTypes.joinToString("/")}"
-                            isChecked = FrSettings.isNuvioEnabled(scraper.id)
-                            setTextColor(p.title)
-                            textSize = 14f
-                            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-                            setOnCheckedChangeListener { _, _ -> refreshProvCount() }
-                        }
-                        val testBtn = Button(context).apply {
-                            text = "Tester"
-                            textSize = 12f
-                            minHeight = 0
-                            minimumHeight = 0
-                            setPadding(context.dp(10), context.dp(4), context.dp(10), context.dp(4))
-                        }
-                        row.addView(box)
-                        row.addView(testBtn)
-                        provContainer.addView(row)
-                        val result = TextView(context).apply {
-                            textSize = 11f
-                            setPadding(context.dp(20), 0, 0, context.dp(4))
-                        }
-                        provContainer.addView(result)
-                        provCheckboxes.add(box)
-                        provResults[box] = result
-                        testBtn.setOnClickListener {
-                            result.setTextColor(p.sub)
-                            result.text = "Test en cours…"
-                            testBtn.isEnabled = false
-                            GlobalScope.launch {
-                                val verdict = NuvioClient.testProvider(scraper.id)
-                                withContext(Dispatchers.Main) {
-                                    result.text = verdict
-                                    result.setTextColor(if (verdict.startsWith("✓")) p.ok else p.err)
-                                    testBtn.isEnabled = true
-                                }
-                            }
-                        }
-                    }
-                    refreshProvCount()
-                }
-            }
-        }
-
-        sProv.addToBody(TextView(context).label(context,
-            "\nDépôts Nuvio (installables) : une URL de manifest.json par ligne.\n" +
-                "Gowaru (FrenchStream, Movix, Vostfree…), z7kx (Senpaistreaming…), Phisher (MoviesDrive…)",
-            12f, p.sub))
-        val reposField = EditText(context).apply {
-            setText(FrSettings.nuvioRepos.joinToString("\n"))
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
-            minLines = 4
-            setHorizontallyScrolling(false)
-        }.box(context, p)
-        sProv.addToBody(reposField)
-        sProv.addToBody(Button(context).apply {
-            text = "↺ Réinstaller les dépôts par défaut (Gowaru + z7kx + Phisher)"
-            setOnClickListener {
-                reposField.setText(FrSettings.DEFAULT_NUVIO_REPOS.joinToString("\n"))
-            }
-        })
-        root.addView(sProv)
 
         // ================================================== 5b. Sources CloudStream
         val sCs = Section(context, Color.parseColor(ACCENTS[8]), "🧲",
@@ -596,9 +411,8 @@ object SettingsDialog {
             "Crédits et remerciements", "FR Unifié", p)
         sCredits.addToBody(TextView(context).label(context,
             "Un seul catalogue (TMDB + AniList) qui agrège les extensions françaises " +
-                "installées, les addons Stremio et les scrapeurs Nuvio.\n\n" +
-                "Moteur : Rhino 1.9.1 patché et relogé (com.frunified.rhino, invisible pour l\u2019app) · Dépôts Nuvio : Gowaru, z7kx, Phisher.\n" +
-                "Astuce : utilisez les boutons « Tester » pour diagnostiquer chaque serveur.",
+                "installées et les addons Stremio.\n\n" +
+                "Astuce : utilisez les boutons « Tester » pour diagnostiquer chaque source.",
             12f, p.sub))
         root.addView(sCredits)
 
@@ -610,27 +424,10 @@ object SettingsDialog {
             .setPositiveButton("Enregistrer") { _, _ ->
                 FrSettings.useLocalSources = localSwitch.isChecked
                 FrSettings.useStremio = stremioSwitch.isChecked
-                FrSettings.useNuvio = nuvioSwitch.isChecked
-                FrSettings.nuvioAllLangs = nuvioAllSwitch.isChecked
                 FrSettings.useSubtitles = subsSwitch.isChecked
 
                 FrSettings.useTmdbCatalog = tmdbCatSwitch.isChecked
                 FrSettings.useAnimeCatalog = animeCatSwitch.isChecked
-
-                FrSettings.nuvioConcurrency = concurrencyField.text.toString().toIntOrNull() ?: 6
-                FrSettings.nuvioMaxPerScraper = maxField.text.toString().toIntOrNull() ?: 12
-                FrSettings.nuvioPriorityPatterns = priorityField.text.toString()
-                    .split(",")
-                    .map { it.trim() }
-                    .filter { it.isNotBlank() }
-                FrSettings.nuvioOrder = orderField.text.toString()
-                    .split("\n")
-                    .map { it.trim() }
-                    .filter { it.isNotBlank() }
-
-                FrSettings.nuvioUserAgent = uaField.text.toString()
-                FrSettings.nuvioReferer = refField.text.toString()
-                FrSettings.nuvioCookies = cookiesField.text.toString()
 
                 FrSettings.tmdbApiKey = tmdbField.text.toString()
                 FrSettings.apiTokens = tokensField.text.toString()
@@ -642,26 +439,9 @@ object SettingsDialog {
                         line.substring(0, i).trim().uppercase() to line.substring(i + 1).trim()
                     }
 
-                provCheckboxes.forEachIndexed { index, box ->
-                    nuvioScrapers.getOrNull(index)?.let { scraper ->
-                        FrSettings.setNuvioEnabled(scraper.id, box.isChecked)
-                    }
-                }
                 srcCheckboxes.forEachIndexed { index, box ->
                     srcNames.getOrNull(index)?.let { FrSettings.setSourceEnabled(it, box.isChecked) }
                 }
-
-                val oldRepos = FrSettings.nuvioRepos
-                val newRepos = reposField.text.toString()
-                    .split("\n", ",")
-                    .map { it.trim() }
-                    .filter { it.startsWith("http") }
-                // mémoire les dépôts par défaut retirés (pour ne pas les réinjecter)
-                runCatching {
-                    val removed = oldRepos.filter { it in FrSettings.DEFAULT_NUVIO_REPOS && it !in newRepos }
-                    FrSettings.nuvioRemovedDefaults = FrSettings.nuvioRemovedDefaults + removed
-                }
-                FrSettings.nuvioRepos = newRepos
 
                 FrSettings.stremioUrls = stremioField.text.toString()
                     .split("\n", ",", " ")

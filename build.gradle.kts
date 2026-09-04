@@ -53,8 +53,8 @@ subprojects {
         compileOptions {
             sourceCompatibility = JavaVersion.VERSION_1_8
             targetCompatibility = JavaVersion.VERSION_1_8
-            // Rhino 1.9.1 utilise des API Java 9+ (Map.entry, List.of…) :
-            // le desugaring les rend compatibles avec les vieux Androïds.
+            // Desugaring : rend les API Java 8+ (java.time, streams…)
+            // disponibles sur les anciennes versions d'Android.
             isCoreLibraryDesugaringEnabled = true
         }
 
@@ -83,35 +83,9 @@ subprojects {
         compileOnly("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
         implementation("com.github.Blatzar:NiceHttp:0.4.11")
         implementation("org.jsoup:jsoup:1.18.3")
-
-        // Moteur JavaScript pour les scrapeurs Nuvio (Gowaru, Phisher…)
-        // Rhino 1.9.1 patché lokalement : yield non parenthésé en argument + call-spread
-        // + compat Android (API Java 9+ remplacées). Source : mozilla/rhino tag Rhino1_9_1_Release.
-        implementation(files("libs/rhino-nuvio-1.9.1.jar"))
         coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
     }
 
-    // ------------------------------------------------------------------
-    // CRUCIAL : le tâche compileDex du plugin CloudStream ne déxe QUE la
-    // sortie de compileDebugKotlin — les jars de libs/ ne sont JAMAIS
-    // embarqués (cause du « 0 serveur Nuvio » : NoClassDefFoundError
-    // sur org.mozilla.javascript.*). On extrait donc les classes du jar
-    // Rhino et on les ajoute aux entrées de compileDex.
-    // ------------------------------------------------------------------
-    // Sync (et non Copy) : efface les classes d'un build précédent, sinon les
-    // anciennes org/mozilla/javascript (v5-v7) restaient dans build/rhino-classes
-    // et étaient déxées en double avec com/frunified/rhino.
-    val extractRhino by tasks.registering(Sync::class) {
-        from(zipTree(project.file("libs/rhino-embed-1.9.1.jar")))
-        into(layout.buildDirectory.dir("rhino-classes"))
-        duplicatesStrategy = DuplicatesStrategy.INCLUDE
-    }
-    afterEvaluate {
-        tasks.withType<com.lagradost.cloudstream3.gradle.tasks.CompileDexTask>().configureEach {
-            dependsOn(extractRhino)
-            input.from(layout.buildDirectory.dir("rhino-classes"))
-        }
-    }
 }
 
 task<Delete>("clean") {
