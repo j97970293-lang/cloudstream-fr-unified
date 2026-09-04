@@ -1,10 +1,10 @@
 [
     {
         "iconUrl": "https://raw.githubusercontent.com/j97970293-lang/cloudstream-fr-unified/master/icon.png",
-        "fileHash": "sha256-048f61cdd66c6687622ab5ad5a002f92777dad4b5e362ac358648d655c19f9f5",
+        "fileHash": "sha256-2fc056b5bdfe9082d758f7eb6697dae656118de260c8f042693521a27fad6411",
         "apiVersion": 1,
         "repositoryUrl": "https://github.com/j97970293-lang/cloudstream-fr-unified",
-        "fileSize": 844148,
+        "fileSize": 844793,
         "status": 1,
         "language": "fr",
         "authors": [
@@ -17,7 +17,7 @@
             "AnimeMovie",
             "Cartoon"
         ],
-        "version": 12,
+        "version": 13,
         "internalName": "FrUnified",
         "description": "Catalogue unique FR (TMDB + AniList) : une seule extension qui agr\u00e8ge la recherche et les liens de toutes les extensions fran\u00e7aises install\u00e9es (French-Stream, Movix, Wiflix, FrenchAnime, Frembed, FSTV, Karma\u2026) et des scrapeurs Nuvio (Gowaru, z7kx, Phisher \u2014 engine Rhino patch\u00e9, RegExp et messages embarqu\u00e9s pour Android, serveurs VF/1080 prioritaires, limite par source, d\u00e9p\u00f4ts installables et r\u00e9glables \u2699\ufe0f). Addons Stremio (Torrentio, Comet, debrid), sous-titres et bandes-annonces.",
         "url": "https://raw.githubusercontent.com/j97970293-lang/cloudstream-fr-unified/builds/FrUnified.cs3",
