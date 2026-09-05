@@ -13,10 +13,10 @@ cloudstream {
      **/
     status = 1
 
-    description = "FR Hub — catalogue unique TMDB + AniList qui AGRÈGE vos extensions "
-        + "françaises installées et vos addons Stremio (flux et catalogues). "
-        + "N'héberge aucune source : filtres de qualité/taille, VF-VOSTFR séparées, "
-        + "rangées d'accueil réordonnables."
+    description = "FR Hub — catalogue unique TMDB + AniList qui AGRÈGE vos extensions " +
+        "françaises installées et vos addons Stremio (flux et catalogues). " +
+        "N'héberge aucune source : filtres de qualité/taille, VF-VOSTFR séparées, " +
+        "rangées d'accueil réordonnables."
 
     tvTypes = listOf("Movie", "TvSeries", "Anime", "AnimeMovie", "Cartoon")
 
