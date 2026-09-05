@@ -392,12 +392,19 @@ object SettingsDialog {
                 FrSettings.stremioCatalogRows = rows
                 withContext(Dispatchers.Main) {
                     stremioCatInfo.setTextColor(if (rows.isEmpty()) p.err else p.ok)
+                    // Un addon mort ne doit pas masquer ceux qui marchent :
+                    // on retire les URLs dont le domaine n'existe plus.
+                    val dead = errors.filter { it.contains("n'existe plus") }
                     stremioCatInfo.text = when {
                         typed.isEmpty() ->
                             "Aucun addon saisi : collez une URL de manifeste ci-dessous " +
                                 "(section « Addons Stremio »), puis relancez la détection."
                         rows.isEmpty() ->
-                            "Aucun catalogue exploitable.\n" + errors.joinToString("\n")
+                            "Aucun catalogue exploitable.\n" + errors.joinToString("\n") +
+                                (if (dead.isNotEmpty())
+                                    "\n\nAstuce : supprimez les lignes marquées " +
+                                        "« n'existe plus » du champ ci-dessus."
+                                else "")
                         else ->
                             "${rows.size} rangée(s) détectée(s) — cochez-les dans " +
                                 "« 🗂️ Rangées de l'accueil », enregistrez, puis " +

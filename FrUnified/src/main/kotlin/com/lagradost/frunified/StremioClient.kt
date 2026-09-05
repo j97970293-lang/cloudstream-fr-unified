@@ -59,11 +59,27 @@ object StremioClient {
      */
     suspend fun catalogs(addon: String): List<CatalogRow> = runCatching {
         val base = base(addon)
-        val raw = runCatching { app.get("$base/manifest.json", timeout = 20).text }
-            .getOrElse {
-                lastCatalogError[base] = "injoignable (${it.message?.take(60)})"
-                return emptyList()
+        // AIO Metadata agrège des dizaines de sources en amont : sa première
+        // réponse peut dépasser 30 s (surtout à froid). Un timeout de 20 s le
+        // déclarait « injoignable » à tort. On laisse 60 s et on réessaie une
+        // fois, car un addon endormi répond souvent au second appel.
+        val raw = run {
+            var last: Throwable? = null
+            for (attempt in 1..2) {
+                val r = runCatching { app.get("$base/manifest.json", timeout = 60).text }
+                if (r.isSuccess) return@run r.getOrThrow()
+                last = r.exceptionOrNull()
             }
+            val msg = last?.message.orEmpty()
+            lastCatalogError[base] = when {
+                msg.contains("NXDOMAIN", true) || msg.contains("UnknownHost", true) ->
+                    "ce domaine n'existe plus — supprimez cet addon"
+                msg.contains("timeout", true) || msg.contains("timed out", true) ->
+                    "trop lent, même après 60 s (addon surchargé ou en veille) — réessayez"
+                else -> "injoignable (${msg.take(60)})"
+            }
+            return emptyList()
+        }
         if (!raw.trimStart().startsWith("{")) {
             // Page HTML de configuration au lieu du manifeste : URL incomplète.
             lastCatalogError[base] =

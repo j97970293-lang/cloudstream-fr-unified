@@ -46,15 +46,13 @@ object FrRepos {
             "https://tmdb.elfhosted.com",
             "CATALOGUE — affiches, titres et synopsis en français"
         ),
+        // NOTE : comet.stremiofr.com et jackettio.stremiofr.com ont été retirés.
+        // Ils exigent une configuration personnelle (clé debrid) et l'URL nue
+        // ne répond pas : les proposer en un clic induisait en erreur.
         Repo(
-            "StremioFR — Comet",
-            "https://comet.stremiofr.com",
-            "FLUX — indexeur français, compatible debrid"
-        ),
-        Repo(
-            "StremioFR — Jackettio",
-            "https://jackettio.stremiofr.com",
-            "FLUX — indexeur français, compatible debrid"
+            "Cinemeta (officiel)",
+            "https://v3-cinemeta.strem.io",
+            "CATALOGUE — catalogue de base de Stremio, toujours disponible"
         ),
         Repo(
             "OpenSubtitles v3",
