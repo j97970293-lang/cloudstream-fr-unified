@@ -21,6 +21,11 @@ object FrSettings {
     private const val KEY_STREMIO_ROWS = "stremio_catalog_rows"
     private const val KEY_ROWS_OFF = "disabled_rows"
     private const val KEY_ADDONS_OFF = "disabled_stream_addons"
+    private const val KEY_F_QUAL = "filter_qualities"
+    private const val KEY_F_KEYW = "filter_keywords"
+    private const val KEY_F_MINMB = "filter_min_mb"
+    private const val KEY_F_MAXMB = "filter_max_mb"
+    private const val KEY_F_DUBONLY = "filter_dub_strict"
     private const val KEY_USE_STREMIO = "use_stremio"
     private const val KEY_USE_SUBS = "use_subtitles"
     private const val KEY_SUB_LANGS = "subtitle_langs"
@@ -126,6 +131,37 @@ object FrSettings {
     /** Addons de flux réellement interrogés. */
     val activeStreamAddons: List<String>
         get() = stremioUrls.filter { isStreamAddonEnabled(it) }
+
+    // ------------------------------------------------- filtres de liens
+
+    /**
+     * Filtres appliqués à TOUS les liens — extensions FR comme addons Stremio.
+     */
+
+    /** Qualités exclues : « 360p », « 480p », « CAM »… (une par ligne ou virgules). */
+    var excludedQualities: List<String>
+        get() = read(KEY_F_QUAL, "").split(",", "\n").map { it.trim().lowercase() }.filter { it.isNotBlank() }
+        set(value) = write(KEY_F_QUAL, value.joinToString(", "))
+
+    /** Mots-clés exclus : « cam », « ts », « hdcam », « telesync », « x265 »… */
+    var excludedKeywords: List<String>
+        get() = read(KEY_F_KEYW, "").split(",", "\n").map { it.trim().lowercase() }.filter { it.isNotBlank() }
+        set(value) = write(KEY_F_KEYW, value.joinToString(", "))
+
+    /** Taille minimale en Mo (0 = pas de minimum). */
+    var minSizeMb: Int
+        get() = read(KEY_F_MINMB, "0").toIntOrNull() ?: 0
+        set(value) = write(KEY_F_MINMB, value.coerceAtLeast(0).toString())
+
+    /** Taille maximale en Mo (0 = pas de maximum). */
+    var maxSizeMb: Int
+        get() = read(KEY_F_MAXMB, "0").toIntOrNull() ?: 0
+        set(value) = write(KEY_F_MAXMB, value.coerceAtLeast(0).toString())
+
+    /** Refuser les liens dont la langue n'est pas explicitement indiquée. */
+    var strictDub: Boolean
+        get() = readBool(KEY_F_DUBONLY, false)
+        set(value) = writeBool(KEY_F_DUBONLY, value)
 
     /** Utiliser les extensions FR installées comme sources de liens. */
     var useLocalSources: Boolean

@@ -242,7 +242,7 @@ object SettingsDialog {
             layoutParams = LinearLayout.LayoutParams(context.dp(56), context.dp(5))
         }
         root.addView(accentBar)
-        root.addView(TextView(context).label(context, "Réglages FR Unifié", 24f, p.title, bold = true).apply {
+        root.addView(TextView(context).label(context, "Réglages FR Hub", 24f, p.title, bold = true).apply {
             setPadding(0, context.dp(10), 0, 0)
         })
         root.addView(TextView(context).label(
@@ -415,7 +415,7 @@ object SettingsDialog {
                     sCs.addToBody(TextView(context).label(context,
                         "Aucune extension française détectée : installez les addons " +
                             "(French-Stream, Movix, Wiflix, FrenchAnime, Frembed, FSTV, Karma…) " +
-                            "dans CloudStream — FR Unifié s'en sert comme sources de liens.",
+                            "dans CloudStream — FR Hub s'en sert comme sources de liens.",
                         12f, p.sub))
                 } else {
                     // Extensions écartées automatiquement (site périmé) : on le
@@ -607,6 +607,113 @@ object SettingsDialog {
         }
         root.addView(sStremio)
 
+        // ================================================== 6c. Sources FR à installer
+        val sRepos = Section(context, Color.parseColor(ACCENTS[3]), "🇫🇷",
+            "Sources françaises", "Dépôts et addons vérifiés", p)
+        sRepos.addToBody(TextView(context).label(context,
+            "FR Hub n'héberge aucun scraper : il agrège ce qui est installé. " +
+                "Voici des sources FR actives, vérifiées à la publication.", 11f, p.sub))
+
+        sRepos.addToBody(TextView(context).label(context,
+            "\nDépôts d'extensions CloudStream", 12f, p.title, bold = true))
+        sRepos.addToBody(TextView(context).label(context,
+            "À coller dans CloudStream → Paramètres → Extensions → Ajouter un dépôt.",
+            11f, p.sub))
+        FrRepos.CLOUDSTREAM.forEach { repo ->
+            sRepos.addToBody(TextView(context).label(context,
+                "• ${repo.name} — ${repo.detail}", 12f, p.title))
+            val url = TextView(context).label(context, repo.url, 10f, p.sub)
+            sRepos.addToBody(url)
+            sRepos.addToBody(Button(context).apply {
+                text = "Copier l'adresse de ${repo.name}"
+                textSize = 12f
+                setOnClickListener {
+                    runCatching {
+                        val cb = context.getSystemService(Context.CLIPBOARD_SERVICE)
+                            as android.content.ClipboardManager
+                        cb.setPrimaryClip(android.content.ClipData.newPlainText(repo.name, repo.url))
+                        Toast.makeText(context, "Adresse copiée : ${repo.name}",
+                            Toast.LENGTH_SHORT).show()
+                    }
+                }
+            })
+        }
+
+        sRepos.addToBody(TextView(context).label(context,
+            "\nAddons Stremio francophones", 12f, p.title, bold = true))
+        sRepos.addToBody(TextView(context).label(context,
+            "Ajoutés directement à l'extension (section « Addons Stremio »), " +
+                "sans passer par CloudStream.", 11f, p.sub))
+        FrRepos.STREMIO.forEach { addon ->
+            sRepos.addToBody(TextView(context).label(context,
+                "• ${addon.name} — ${addon.detail}", 12f, p.title))
+            sRepos.addToBody(Button(context).apply {
+                text = "Ajouter ${addon.name}"
+                textSize = 12f
+                setOnClickListener {
+                    val current = FrSettings.stremioUrls
+                    if (current.any { StremioClient.base(it) == StremioClient.base(addon.url) }) {
+                        Toast.makeText(context, "${addon.name} est déjà dans la liste.",
+                            Toast.LENGTH_SHORT).show()
+                    } else {
+                        FrSettings.stremioUrls = current + addon.url
+                        stremioField.setText(FrSettings.stremioUrls.joinToString("\n"))
+                        Toast.makeText(context,
+                            "${addon.name} ajouté. Utilisez « Détecter » pour ses catalogues.",
+                            Toast.LENGTH_LONG).show()
+                    }
+                }
+            })
+        }
+        root.addView(sRepos)
+
+        // ================================================== 6d. Filtres de liens
+        val sFilters = Section(context, Color.parseColor(ACCENTS[6]), "🧪",
+            "Filtres de liens", "Qualité, taille, mots-clés", p)
+        sFilters.addToBody(TextView(context).label(context,
+            "Ces filtres s'appliquent à TOUTES les sources : extensions FR " +
+                "installées comme addons Stremio.", 11f, p.sub))
+
+        sFilters.addToBody(TextView(context).label(context,
+            "Qualités à exclure (séparées par des virgules)", 12f, p.title))
+        sFilters.addToBody(TextView(context).label(context,
+            "Exemples : 360p, 480p, cam, ts", 11f, p.sub))
+        val qualField = EditText(context).apply {
+            setText(FrSettings.excludedQualities.joinToString(", "))
+            inputType = InputType.TYPE_CLASS_TEXT
+        }.box(context, p)
+        sFilters.addToBody(qualField)
+
+        sFilters.addToBody(TextView(context).label(context,
+            "Mots-clés à exclure", 12f, p.title))
+        sFilters.addToBody(TextView(context).label(context,
+            "Exemples : hdcam, telesync, x265, hevc, dvdscr", 11f, p.sub))
+        val keywField = EditText(context).apply {
+            setText(FrSettings.excludedKeywords.joinToString(", "))
+            inputType = InputType.TYPE_CLASS_TEXT
+        }.box(context, p)
+        sFilters.addToBody(keywField)
+
+        sFilters.addToBody(TextView(context).label(context,
+            "Taille minimale en Mo (0 = aucune limite)", 12f, p.title))
+        val minField = EditText(context).apply {
+            setText(FrSettings.minSizeMb.toString())
+            inputType = InputType.TYPE_CLASS_NUMBER
+        }.box(context, p)
+        sFilters.addToBody(minField)
+
+        sFilters.addToBody(TextView(context).label(context,
+            "Taille maximale en Mo (0 = aucune limite)", 12f, p.title))
+        val maxField = EditText(context).apply {
+            setText(FrSettings.maxSizeMb.toString())
+            inputType = InputType.TYPE_CLASS_NUMBER
+        }.box(context, p)
+        sFilters.addToBody(maxField)
+        sFilters.addToBody(TextView(context).label(context,
+            "La taille n'est annoncée que par certains addons (Torrentio…). " +
+                "Un lien sans taille indiquée n'est jamais écarté.", 11f, p.sub))
+        root.addView(sFilters)
+
         // ================================================== 7. Sous-titres
         val sSubs = Section(context, Color.parseColor(ACCENTS[6]), "📜",
             "Sous-titres", "Langues conservées", p)
@@ -621,7 +728,7 @@ object SettingsDialog {
 
         // ================================================== 8. Crédits
         val sCredits = Section(context, Color.parseColor(ACCENTS[7]), "🎖️",
-            "Crédits et remerciements", "FR Unifié", p)
+            "Crédits et remerciements", "FR Hub", p)
         sCredits.addToBody(TextView(context).label(context,
             "Un seul catalogue (TMDB + AniList) qui agrège les extensions françaises " +
                 "installées et les addons Stremio.\n\n" +
@@ -632,7 +739,7 @@ object SettingsDialog {
         val scroll = ScrollView(context).apply { addView(root) }
 
         AlertDialog.Builder(context)
-            .setTitle("FR Unifié")
+            .setTitle("FR Hub")
             .setView(scroll)
             .setPositiveButton("Enregistrer") { _, _ ->
                 FrSettings.useLocalSources = localSwitch.isChecked
@@ -643,6 +750,12 @@ object SettingsDialog {
                 FrSettings.useAnimeCatalog = animeCatSwitch.isChecked
                 FrSettings.useStremioCatalog = stremioCatSwitch.isChecked
                 FrSettings.stremioCatalogFirst = stremioFirstSwitch.isChecked
+                FrSettings.excludedQualities =
+                    qualField.text.toString().split(",").map { it.trim() }.filter { it.isNotBlank() }
+                FrSettings.excludedKeywords =
+                    keywField.text.toString().split(",").map { it.trim() }.filter { it.isNotBlank() }
+                FrSettings.minSizeMb = minField.text.toString().trim().toIntOrNull() ?: 0
+                FrSettings.maxSizeMb = maxField.text.toString().trim().toIntOrNull() ?: 0
 
                 FrSettings.tmdbApiKey = tmdbField.text.toString()
                 FrSettings.apiTokens = tokensField.text.toString()

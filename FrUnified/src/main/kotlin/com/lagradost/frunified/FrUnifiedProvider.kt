@@ -38,7 +38,12 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 
 /**
- * FR Unifié — UN catalogue, TOUTES les sources françaises.
+ * FR Hub — UN catalogue, TOUTES les sources françaises.
+ *
+ * Le nom dit ce que fait l'extension : c'est un HUB, pas un site. Elle
+ * n'héberge aucun scraper et ne connaît aucun site de streaming en propre ;
+ * elle agrège les extensions FR installées dans CloudStream et les addons
+ * Stremio configurés, derrière un catalogue TMDB/AniList unique.
  *
  * Toutes les écritures de champs « avancés » (score, acteurs, trailers, IDs de
  * synchronisation…) sont protégées par [safe] : selon la version de CloudStream
@@ -237,7 +242,7 @@ class FrUnifiedProvider : MainAPI() {
             throw c
         } catch (t: Throwable) {
             errorResponse(
-                "Erreur interne FR Unifié : ${t::class.simpleName ?: t.javaClass.simpleName} — " +
+                "Erreur interne FR Hub : ${t::class.simpleName ?: t.javaClass.simpleName} — " +
                     (t.message?.take(240) ?: "détail inconnu"),
                 url
             )
@@ -245,7 +250,7 @@ class FrUnifiedProvider : MainAPI() {
     }
 
     private suspend fun errorResponse(message: String, url: String): LoadResponse? = runCatching {
-        newMovieLoadResponse("FR Unifié — diagnostic", url, TvType.Movie, "{}") {
+        newMovieLoadResponse("FR Hub — diagnostic", url, TvType.Movie, "{}") {
             this.plot = message
         }
     }.getOrNull()
@@ -673,7 +678,7 @@ class FrUnifiedProvider : MainAPI() {
     }
 
     companion object {
-        const val PROVIDER_NAME = "FR Unifié"
+        const val PROVIDER_NAME = "FR Hub"
 
         /** Rangées du catalogue d'origine, exposées pour l'écran ⚙️. */
         val BASE_PAGE = mainPageOf(

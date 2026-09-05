@@ -224,6 +224,10 @@ object StremioClient {
                 else -> null
             } ?: continue
 
+            // Mêmes filtres que pour les extensions FR : les réglages de
+            // qualité / mots-clés / taille s'appliquent à toutes les sources.
+            if (LinkFilter.reject(link, "Stremio") != null) continue
+
             emitted = true
             callback(link)
         }

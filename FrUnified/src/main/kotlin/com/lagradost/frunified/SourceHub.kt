@@ -425,17 +425,29 @@ object SourceHub {
         }
 
         var emitted = false
+        var filtered = 0
         val tagged: (ExtractorLink) -> Unit = { link ->
             // Filtre VF / VOSTFR : sans lui, l'onglet « Dub » rejouait les mêmes
             // liens que « Sub » et une VF inexistante semblait disponible.
-            if (matchesDub(payload.dub, api, link)) {
+            // Filtres communs (qualité, mots-clés, taille) + piste VF/VOSTFR.
+            val rejected = LinkFilter.reject(link, api.name)
+            if (rejected != null) {
+                filtered++
+            } else if (!matchesDub(payload.dub, api, link)) {
+                filtered++
+            } else {
                 emitted = true
                 callback(rename(api, link, payload.dub))
             }
         }
 
         runCatching { api.loadLinks(data, false, subtitleCallback, tagged) }
-        lastErrors[api.name] = if (emitted) "✓ lien(s) émis" else "✓ 0 lien"
+        lastErrors[api.name] = when {
+            emitted && filtered > 0 -> "✓ lien(s) émis ($filtered filtré(s))"
+            emitted -> "✓ lien(s) émis"
+            filtered > 0 -> "✓ 0 lien ($filtered écarté(s) par vos filtres)"
+            else -> "✓ 0 lien"
+        }
         emitted
     } catch (t: Throwable) {
         val msg = t.message
@@ -569,7 +581,7 @@ object SourceHub {
             if (detected.isEmpty()) {
                 append("⚠️ Aucune extension française détectée. Installez les addons FR ")
                 append("(French-Stream, Movix, Wiflix, FrenchAnime, Frembed, FSTV…) : ")
-                append("FR Unifié s'en sert pour trouver les liens.")
+                append("FR Hub s'en sert pour trouver les liens.")
             } else {
                 append("🔗 ${active.size}/${detected.size} source(s) active(s) : ")
                 append(active.joinToString(", ").ifBlank { "aucune (tout est désactivé dans les réglages)" })
