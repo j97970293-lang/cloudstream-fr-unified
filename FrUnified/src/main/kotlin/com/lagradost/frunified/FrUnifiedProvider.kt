@@ -72,13 +72,15 @@ class FrUnifiedProvider : MainAPI() {
     private fun stremioRows(): List<Pair<String, String>> =
         if (!FrSettings.useStremioCatalog) emptyList()
         else FrSettings.stremioCatalogRows.mapNotNull { line ->
+            // « addon#type#id#nom#extra » (extra facultatif, ex. genre=Action)
             val parts = line.split("#")
             if (parts.size < 4) return@mapNotNull null
             val addon = parts[0]
             val type = parts[1]
             val id = parts[2]
-            val name = parts.drop(3).joinToString("#")
-            ("stremio|$addon#$type#$id") to name
+            val name = parts[3]
+            val extra = parts.getOrNull(4).orEmpty()
+            ("stremio|$addon#$type#$id#$extra") to name
         }
 
     override val mainPage: List<MainPageData>
@@ -160,17 +162,24 @@ class FrUnifiedProvider : MainAPI() {
     private suspend fun stremioRow(target: String, page: Int): List<CatalogItem> = coroutineScope {
         val parts = target.split("#")
         if (parts.size < 3) return@coroutineScope emptyList()
-        val row = StremioClient.CatalogRow(parts[0], parts[1], parts[2], "")
+        val extra = parts.getOrNull(3)?.takeIf { it.isNotBlank() }
+        val row = StremioClient.CatalogRow(parts[0], parts[1], parts[2], "", extra)
         val metas = StremioClient.catalogItems(row, page)
         if (metas.isEmpty()) return@coroutineScope emptyList()
 
         metas.map { meta ->
             async {
+                // Les addons n'utilisent pas tous IMDb : AIO Metadata et les
+                // addons TMDB publient « tmdb:1399 », les addons d'animés
+                // « kitsu:… ». On traite chaque cas plutôt que de tout jeter.
+                val tmdbId = meta.tmdbId
                 val imdb = meta.imdbId
-                if (imdb != null) {
-                    TmdbCatalog.byImdb(imdb, meta.type)
-                } else {
-                    TmdbCatalog.searchBest(meta.name, meta.year)
+                when {
+                    tmdbId != null -> TmdbCatalog.byTmdbId(tmdbId, meta.type)
+                    imdb != null -> TmdbCatalog.byImdb(imdb, meta.type)
+                    else -> TmdbCatalog.searchBest(
+                        TitleMatch.stripSeason(meta.name), meta.year
+                    )
                 }
             }
         }.awaitAll().filterNotNull().distinctBy { it.id.serialize() }
@@ -478,7 +487,8 @@ class FrUnifiedProvider : MainAPI() {
             ?: airing
             ?: malId?.let { JikanCatalog.airedEpisodeCount(it.toString()) }
             ?: 24
-        val episodes = animeEpisodes(titles, item.year, count, anilistId = id.id.toIntOrNull(), malId = malId)
+        val dubbed = animeEpisodes(titles, item.year, count, anilistId = id.id.toIntOrNull(), malId = malId, dub = "dub")
+        val subbed = animeEpisodes(titles, item.year, count, anilistId = id.id.toIntOrNull(), malId = malId, dub = "sub")
 
         return newAnimeLoadResponse(item.title, id.serialize(), TvType.Anime) {
             this.posterUrl = item.posterUrl
@@ -489,8 +499,8 @@ class FrUnifiedProvider : MainAPI() {
             safe { this.score = Score.from10(item.rating10) }
             safe {
                 this.episodes = mutableMapOf(
-                    DubStatus.Dubbed to episodes,
-                    DubStatus.Subbed to episodes
+                    DubStatus.Dubbed to dubbed,
+                    DubStatus.Subbed to subbed
                 )
             }
             safe { addAniListId(id.id.toIntOrNull()) }
@@ -541,7 +551,8 @@ class FrUnifiedProvider : MainAPI() {
         val count = data.optInt("episodes").takeIf { it > 0 }
             ?: JikanCatalog.airedEpisodeCount(id.id)
             ?: 24
-        val episodes = animeEpisodes(titles, item.year, count, anilistId = null, malId = malId)
+        val dubbed = animeEpisodes(titles, item.year, count, anilistId = null, malId = malId, dub = "dub")
+        val subbed = animeEpisodes(titles, item.year, count, anilistId = null, malId = malId, dub = "sub")
 
         return newAnimeLoadResponse(item.title, id.serialize(), TvType.Anime) {
             this.posterUrl = item.posterUrl
@@ -551,8 +562,8 @@ class FrUnifiedProvider : MainAPI() {
             safe { this.score = Score.from10(item.rating10) }
             safe {
                 this.episodes = mutableMapOf(
-                    DubStatus.Dubbed to episodes,
-                    DubStatus.Subbed to episodes
+                    DubStatus.Dubbed to dubbed,
+                    DubStatus.Subbed to subbed
                 )
             }
             safe { addMalId(malId) }
@@ -565,7 +576,8 @@ class FrUnifiedProvider : MainAPI() {
         year: Int?,
         count: Int,
         anilistId: Int?,
-        malId: Int?
+        malId: Int?,
+        dub: String? = null
     ): List<Episode> = (1..count).map { number ->
         val payload = PlayPayload(
             kind = "anime",
@@ -575,7 +587,8 @@ class FrUnifiedProvider : MainAPI() {
             episode = number,
             absoluteEpisode = number,
             anilistId = anilistId,
-            malId = malId
+            malId = malId,
+            dub = dub
         )
         newEpisode(payload.serialize()) {
             this.name = "Épisode $number"

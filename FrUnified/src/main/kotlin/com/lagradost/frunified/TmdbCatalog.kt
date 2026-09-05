@@ -122,6 +122,24 @@ object TmdbCatalog {
         return if (preferTv) tv ?: movie else movie ?: tv
     }
 
+    /**
+     * Fiche TMDB à partir d'un identifiant TMDB direct (« tmdb:1399 » chez
+     * AIO Metadata). Le type n'étant pas toujours fiable, on essaie l'autre
+     * en repli plutôt que de renvoyer une fiche vide.
+     */
+    suspend fun byTmdbId(tmdbId: Int, hint: String? = null): CatalogItem? {
+        val preferTv = hint?.contains("series", true) == true ||
+            hint?.contains("tv", true) == true ||
+            hint?.contains("anime", true) == true
+        val order = if (preferTv) listOf("tv", "movie") else listOf("movie", "tv")
+        for (kind in order) {
+            val json = get("$kind/$tmdbId") ?: continue
+            if (json.optInt("id") <= 0) continue
+            toItem(json, kind)?.let { return it }
+        }
+        return null
+    }
+
     suspend fun row(path: String, page: Int, params: Map<String, String> = emptyMap(), kind: String? = null): List<CatalogItem> =
         list(get(path, params + mapOf("page" to page.toString())), kind)
 

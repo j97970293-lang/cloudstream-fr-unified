@@ -426,8 +426,12 @@ object SourceHub {
 
         var emitted = false
         val tagged: (ExtractorLink) -> Unit = { link ->
-            emitted = true
-            callback(rename(api, link))
+            // Filtre VF / VOSTFR : sans lui, l'onglet « Dub » rejouait les mêmes
+            // liens que « Sub » et une VF inexistante semblait disponible.
+            if (matchesDub(payload.dub, api, link)) {
+                emitted = true
+                callback(rename(api, link, payload.dub))
+            }
         }
 
         runCatching { api.loadLinks(data, false, subtitleCallback, tagged) }
@@ -497,12 +501,53 @@ object SourceHub {
 
     /** Préfixe le lien par le nom de la source pour rester lisible dans le lecteur. */
     @Suppress("DEPRECATION")
-    private fun rename(api: MainAPI, link: ExtractorLink): ExtractorLink {
+    /**
+     * Décide si un lien correspond à la piste demandée (VF ou VOSTFR).
+     *
+     * Les extensions françaises signalent la langue dans le nom du lien
+     * (« VF », « VOSTFR », « French », « Subbed »…). On refuse un lien dont
+     * l'étiquette contredit la demande. Un lien non étiqueté est accepté :
+     * mieux vaut un lien de langue incertaine que pas de lien du tout — mais
+     * il est alors marqué « ? » pour ne pas mentir à l'utilisateur.
+     */
+    private fun dubLabel(text: String): String? {
+        val t = " " + text.lowercase()
+            .replace(Regex("[^a-z0-9]+"), " ") + " "
+        val isSub = Regex("\\b(vostfr|vost|sub|subbed|soustitre|soustitres|st)\\b").containsMatchIn(t)
+        val isDub = Regex("\\b(vf|vff|vfq|truefrench|french|dub|dubbed|multi)\\b").containsMatchIn(t)
+        // « VOSTFR » contient « vf » : la marque sous-titrée l'emporte toujours.
+        return when {
+            isSub -> "sub"
+            isDub -> "dub"
+            else -> null
+        }
+    }
+
+    private fun matchesDub(wanted: String?, api: MainAPI, link: ExtractorLink): Boolean {
+        if (wanted == null) return true
+        val label = dubLabel(link.name + " " + api.name) ?: return true
+        return label == wanted
+    }
+
+    private fun rename(api: MainAPI, link: ExtractorLink, wanted: String? = null): ExtractorLink {
         if (link.javaClass != ExtractorLink::class.java) return link
         return runCatching {
             ExtractorLink(
                 source = api.name,
-                name = "${api.name} • ${link.name}",
+                name = buildString {
+                    append(api.name).append(" • ")
+                    // Étiquette explicite : « VF » sûre, « VF ? » si déduite du
+                    // seul onglet choisi, pour que l'incertitude reste visible.
+                    when (dubLabel(link.name + " " + api.name)) {
+                        "dub" -> append("VF · ")
+                        "sub" -> append("VOSTFR · ")
+                        else -> when (wanted) {
+                            "dub" -> append("VF ? · ")
+                            "sub" -> append("VOSTFR ? · ")
+                        }
+                    }
+                    append(link.name)
+                },
                 url = link.url,
                 referer = link.referer,
                 quality = link.quality,

@@ -345,7 +345,10 @@ object SettingsDialog {
                 FrSettings.stremioUrls.forEach { addon ->
                     runCatching { StremioClient.catalogs(addon) }.getOrDefault(emptyList())
                         .forEach { c ->
-                            rows += listOf(c.addon, c.type, c.id, c.name).joinToString("#")
+                            rows += listOf(
+                                c.addon, c.type, c.id,
+                                c.name.replace("#", " "), c.extra.orEmpty()
+                            ).joinToString("#")
                         }
                 }
                 FrSettings.stremioCatalogRows = rows
@@ -354,8 +357,9 @@ object SettingsDialog {
                     stremioCatInfo.text = if (rows.isEmpty())
                         "Aucun catalogue exploitable trouvé. Torrentio et Comet ne " +
                             "publient que des flux, pas de catalogue : essayez un addon " +
-                            "de type catalogue (Cinemeta, TMDB Addon…)."
-                    else "${rows.size} rangée(s) détectée(s). Rouvrez l'accueil pour les voir."
+                            "de type catalogue (AIO Metadata, Cinemeta, TMDB Addon…)."
+                    else "${rows.size} rangée(s) détectée(s). Cochez-les dans « Rangées " +
+                        "de l'accueil », puis rouvrez l'accueil."
                     detectBtn.isEnabled = true
                 }
             }
@@ -525,7 +529,7 @@ object SettingsDialog {
         val stremioRowsCfg = FrSettings.stremioCatalogRows.mapNotNull { line ->
             val parts = line.split("#")
             if (parts.size < 4) null
-            else ("stremio|${parts[0]}#${parts[1]}#${parts[2]}") to parts.drop(3).joinToString("#")
+            else ("stremio|${parts[0]}#${parts[1]}#${parts[2]}#${parts.getOrNull(4).orEmpty()}") to parts[3]
         }
         fun refreshRowCount() {
             val on = rowBoxes.count { it.isChecked }

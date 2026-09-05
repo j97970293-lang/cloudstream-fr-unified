@@ -41,9 +41,11 @@ object StremioClient {
         val addon: String,
         val type: String,   // "movie" | "series" | "anime"…
         val id: String,
-        val name: String
+        val name: String,
+        /** Extra obligatoire résolu, ex. « genre=Action ». */
+        val extra: String? = null
     ) {
-        /** Encodé dans `mainPage`, sous la forme `stremio|<addon>#<type>#<id>`. */
+        /** Encodé dans `mainPage` : `stremio|<addon>#<type>#<id>#<extra>`. */
         fun encode(): String = "stremio|$addon#$type#$id"
     }
 
@@ -63,16 +65,34 @@ object StremioClient {
             val type = cat.optString("type").takeIf { it.isNotBlank() } ?: return@mapNotNull null
             val id = cat.optString("id").takeIf { it.isNotBlank() } ?: return@mapNotNull null
 
-            // Un « extra » marqué required = true rend le catalogue inutilisable ici.
-            val required = cat.optJSONArray("extra")?.let { extras ->
-                (0 until extras.length()).any { j ->
-                    extras.optJSONObject(j)?.optBoolean("isRequired", false) == true
+            // Un « extra » obligatoire ne condamne plus le catalogue : beaucoup
+            // d'addons (AIO Metadata…) exigent un `genre` tout en fournissant la
+            // liste de ses valeurs. On prend alors la première option proposée.
+            // Seul un extra obligatoire SANS options (une recherche libre) reste
+            // inutilisable pour une rangée d'accueil.
+            var extraArg: String? = null
+            var impossible = false
+            cat.optJSONArray("extra")?.let { extras ->
+                for (j in 0 until extras.length()) {
+                    val ex = extras.optJSONObject(j) ?: continue
+                    if (!ex.optBoolean("isRequired", false)) continue
+                    val exName = ex.optString("name")
+                    val opts = ex.optJSONArray("options")
+                    val first = (0 until (opts?.length() ?: 0))
+                        .mapNotNull { k -> opts?.optString(k)?.takeIf { it.isNotBlank() } }
+                        .firstOrNull()
+                    if (exName.isNotBlank() && first != null) {
+                        extraArg = "$exName=$first"
+                    } else {
+                        impossible = true
+                    }
                 }
-            } ?: false
-            if (required) return@mapNotNull null
+            }
+            if (impossible) return@mapNotNull null
 
             val label = cat.optString("name").takeIf { it.isNotBlank() } ?: id
-            CatalogRow(base, type, id, "$addonName · $label")
+            val suffix = extraArg?.let { " (" + it.substringAfter("=") + ")" }.orEmpty()
+            CatalogRow(base, type, id, "$addonName · $label$suffix", extraArg)
         }
     }.getOrDefault(emptyList())
 
@@ -86,7 +106,11 @@ object StremioClient {
     suspend fun catalogItems(row: CatalogRow, page: Int): List<StremioMeta> = runCatching {
         // Stremio pagine par tranches de 100 via l'extra « skip ».
         val skip = (page - 1) * 100
-        val suffix = if (skip > 0) "/skip=$skip.json" else ".json"
+        val args = buildList {
+            row.extra?.takeIf { it.isNotBlank() }?.let { add(it) }
+            if (skip > 0) add("skip=$skip")
+        }
+        val suffix = if (args.isEmpty()) ".json" else "/" + args.joinToString("&") + ".json"
         val url = "${row.addon}/catalog/${row.type}/${row.id}$suffix"
         val json = JSONObject(app.get(url, timeout = 25).text)
         val metas = json.optJSONArray("metas") ?: return emptyList()
@@ -115,6 +139,19 @@ object StremioClient {
     ) {
         /** `tt123` éventuel (les addons dérivent souvent leur id d'IMDb). */
         val imdbId: String? get() = Regex("tt\\d{6,}").find(id)?.value
+
+        /**
+         * Identifiant TMDB direct : « tmdb:1399 », « tmdb-1399 ».
+         * AIO Metadata et les addons TMDB n'exposent PAS d'identifiant IMDb —
+         * sans cette lecture, toutes leurs entrées étaient jetées et la rangée
+         * restait vide.
+         */
+        val tmdbId: Int? get() =
+            Regex("(?i)(?:^|[^a-z])tmdb[:\\-_/]?(\\d+)").find(id)?.groupValues?.get(1)?.toIntOrNull()
+
+        /** Identifiants d'animés (Kitsu, MAL, AniList) : résolus par titre. */
+        val isAnimeId: Boolean get() =
+            Regex("(?i)^(kitsu|mal|anilist|anidb)[:\\-_/]").containsMatchIn(id)
     }
 
     /** Identifiant Stremio : `tt123` pour un film, `tt123:1:2` pour un épisode. */

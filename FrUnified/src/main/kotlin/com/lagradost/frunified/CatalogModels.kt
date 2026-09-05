@@ -93,7 +93,9 @@ data class PlayPayload(
     val tmdbId: Int? = null,
     val imdbId: String? = null,
     val anilistId: Int? = null,
-    val malId: Int? = null
+    val malId: Int? = null,
+    /** "dub" = VF demandée, "sub" = VOSTFR demandée, null = indifférent. */
+    val dub: String? = null
 ) {
     fun serialize(): String = JSONObject().apply {
         put("kind", kind)
@@ -106,6 +108,7 @@ data class PlayPayload(
         imdbId?.let { put("imdb", it) }
         anilistId?.let { put("anilist", it) }
         malId?.let { put("mal", it) }
+        dub?.let { put("dub", it) }
     }.toString()
 
     val isSeries: Boolean get() = kind != "movie"
@@ -124,7 +127,8 @@ data class PlayPayload(
                 tmdbId = json.optInt("tmdb").takeIf { it > 0 },
                 imdbId = json.optString("imdb").takeIf { it.isNotBlank() },
                 anilistId = json.optInt("anilist").takeIf { it > 0 },
-                malId = json.optInt("mal").takeIf { it > 0 }
+                malId = json.optInt("mal").takeIf { it > 0 },
+                dub = json.optString("dub").takeIf { it.isNotBlank() }
             )
         }.getOrNull()
     }
