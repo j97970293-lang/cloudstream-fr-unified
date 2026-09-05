@@ -49,16 +49,34 @@ object StremioClient {
         fun encode(): String = "stremio|$addon#$type#$id"
     }
 
+    /** Dernier diagnostic de détection, par addon (pour l'écran ⚙️). */
+    val lastCatalogError = java.util.concurrent.ConcurrentHashMap<String, String>()
+
     /**
      * Lit le manifeste d'un addon et retourne les catalogues qu'il publie.
-     * Les catalogues exigeant une saisie de l'utilisateur (`search` requis)
-     * sont ignorés : ils ne peuvent pas alimenter une rangée d'accueil.
+     * Un catalogue exigeant une recherche libre est ignoré : il ne peut pas
+     * alimenter une rangée d'accueil.
      */
     suspend fun catalogs(addon: String): List<CatalogRow> = runCatching {
         val base = base(addon)
-        val manifest = JSONObject(app.get("$base/manifest.json", timeout = 20).text)
+        val raw = runCatching { app.get("$base/manifest.json", timeout = 20).text }
+            .getOrElse {
+                lastCatalogError[base] = "injoignable (${it.message?.take(60)})"
+                return emptyList()
+            }
+        if (!raw.trimStart().startsWith("{")) {
+            // Page HTML de configuration au lieu du manifeste : URL incomplète.
+            lastCatalogError[base] =
+                "ce n'est pas un manifeste JSON — l'URL doit finir par /manifest.json"
+            return emptyList()
+        }
+        val manifest = JSONObject(raw)
         val addonName = manifest.optString("name").takeIf { it.isNotBlank() } ?: "Stremio"
-        val array = manifest.optJSONArray("catalogs") ?: return emptyList()
+        val array = manifest.optJSONArray("catalogs")
+        if (array == null || array.length() == 0) {
+            lastCatalogError[base] = "cet addon ne publie aucun catalogue (flux uniquement)"
+            return emptyList()
+        }
 
         (0 until array.length()).mapNotNull { i ->
             val cat = array.optJSONObject(i) ?: return@mapNotNull null
@@ -72,6 +90,8 @@ object StremioClient {
             // inutilisable pour une rangée d'accueil.
             var extraArg: String? = null
             var impossible = false
+
+            // Format moderne : "extra": [ { name, isRequired, options } ]
             cat.optJSONArray("extra")?.let { extras ->
                 for (j in 0 until extras.length()) {
                     val ex = extras.optJSONObject(j) ?: continue
@@ -83,9 +103,26 @@ object StremioClient {
                         .firstOrNull()
                     if (exName.isNotBlank() && first != null) {
                         extraArg = "$exName=$first"
-                    } else {
-                        impossible = true
+                    } else if (exName.equals("search", true)) {
+                        impossible = true          // recherche libre : inutilisable en rangée
+                    } else if (exName.isNotBlank()) {
+                        // Obligatoire sans options : on tente les genres usuels
+                        extraArg = "$exName=Action"
                     }
+                }
+            }
+
+            // Format hérité : "extraRequired": ["genre"], "genres": [...]
+            cat.optJSONArray("extraRequired")?.let { req ->
+                for (j in 0 until req.length()) {
+                    val exName = req.optString(j).takeIf { it.isNotBlank() } ?: continue
+                    if (exName.equals("search", true)) { impossible = true; continue }
+                    val opts = cat.optJSONArray("genres")
+                        ?: cat.optJSONArray("options")
+                    val first = (0 until (opts?.length() ?: 0))
+                        .mapNotNull { k -> opts?.optString(k)?.takeIf { it.isNotBlank() } }
+                        .firstOrNull()
+                    extraArg = if (first != null) "$exName=$first" else "$exName=Action"
                 }
             }
             if (impossible) return@mapNotNull null
@@ -93,8 +130,15 @@ object StremioClient {
             val label = cat.optString("name").takeIf { it.isNotBlank() } ?: id
             val suffix = extraArg?.let { " (" + it.substringAfter("=") + ")" }.orEmpty()
             CatalogRow(base, type, id, "$addonName · $label$suffix", extraArg)
+        }.also {
+            lastCatalogError[base] =
+                if (it.isEmpty()) "${array.length()} catalogue(s) annoncé(s), aucun exploitable"
+                else "${it.size} catalogue(s)"
         }
-    }.getOrDefault(emptyList())
+    }.getOrElse {
+        lastCatalogError[base(addon)] = "erreur de lecture : ${it.message?.take(60)}"
+        emptyList()
+    }
 
     /**
      * Récupère les métadonnées d'une rangée de catalogue.

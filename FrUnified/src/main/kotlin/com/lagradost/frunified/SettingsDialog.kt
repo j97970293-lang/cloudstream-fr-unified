@@ -374,10 +374,14 @@ object SettingsDialog {
                 val errors = mutableListOf<String>()
                 typed.forEach { addon ->
                     val found = runCatching { StremioClient.catalogs(addon) }
-                        .onFailure { errors += "injoignable" }
                         .getOrDefault(emptyList())
-                    if (found.isEmpty()) errors += StremioClient.base(addon)
-                        .removePrefix("https://").take(28)
+                    if (found.isEmpty()) {
+                        val host = StremioClient.base(addon)
+                            .removePrefix("https://").removePrefix("http://").take(30)
+                        val why = StremioClient.lastCatalogError[StremioClient.base(addon)]
+                            ?: "aucune réponse"
+                        errors += "$host : $why"
+                    }
                     found.forEach { c ->
                             rows += listOf(
                                 c.addon, c.type, c.id,
@@ -393,10 +397,7 @@ object SettingsDialog {
                             "Aucun addon saisi : collez une URL de manifeste ci-dessous " +
                                 "(section « Addons Stremio »), puis relancez la détection."
                         rows.isEmpty() ->
-                            "Aucun catalogue trouvé sur : " + errors.joinToString(", ") +
-                                ".\nTorrentio et Comet ne publient que des flux. Vérifiez " +
-                                "que l'URL se termine par /manifest.json et que l'addon " +
-                                "est bien configuré (AIO Metadata exige une configuration)."
+                            "Aucun catalogue exploitable.\n" + errors.joinToString("\n")
                         else ->
                             "${rows.size} rangée(s) détectée(s) — cochez-les dans " +
                                 "« 🗂️ Rangées de l'accueil », enregistrez, puis " +
