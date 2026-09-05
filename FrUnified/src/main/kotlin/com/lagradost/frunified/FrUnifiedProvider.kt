@@ -129,6 +129,63 @@ class FrUnifiedProvider : MainAPI() {
     }
 
     /**
+     * Fiche issue directement d'un addon Stremio (entrée absente de TMDB).
+     *
+     * On interroge l'endpoint `/meta/<type>/<id>.json` de l'addon, comme le
+     * fait StremioC. Si l'addon ne répond pas, on tente une dernière fois de
+     * rattacher le titre à TMDB avant d'abandonner.
+     */
+    private suspend fun loadStremioMeta(id: CatalogId): LoadResponse? {
+        val addons = (FrSettings.stremioCatalogUrls + FrSettings.stremioUrls).distinct()
+        val meta = addons.firstNotNullOfOrNull { addon ->
+            runCatching { StremioClient.meta(addon, id.kind, id.id) }.getOrNull()
+        }
+
+        if (meta == null) {
+            // Repli : peut-être que TMDB connaît ce titre finalement.
+            val fallback = runCatching { TmdbCatalog.searchBest(id.id, null) }.getOrNull()
+            if (fallback != null) return loadTmdb(fallback.id)
+            return errorResponse(
+                "Fiche Stremio introuvable : l'addon n'a pas répondu pour « ${id.id} ». " +
+                    "Vérifiez que l'addon de catalogue est toujours configuré dans ⚙️.",
+                id.serialize()
+            )
+        }
+
+        val payload = PlayPayload(
+            kind = if (meta.isSeries) "tv" else "movie",
+            titles = listOf(meta.name),
+            year = meta.year,
+            imdbId = meta.imdbId
+        )
+
+        if (!meta.isSeries) {
+            return newMovieLoadResponse(meta.name, id.serialize(), TvType.Movie, payload.serialize()) {
+                this.posterUrl = meta.poster
+                this.plot = meta.description
+                this.year = meta.year
+                safe { addImdbId(meta.imdbId) }
+            }
+        }
+
+        val episodes = meta.videos.map { v ->
+            newEpisode(
+                payload.copy(season = v.season, episode = v.episode).serialize()
+            ) {
+                this.name = v.title
+                this.season = v.season
+                this.episode = v.episode
+            }
+        }
+        return newTvSeriesLoadResponse(meta.name, id.serialize(), TvType.TvSeries, episodes) {
+            this.posterUrl = meta.poster
+            this.plot = meta.description
+            this.year = meta.year
+            safe { addImdbId(meta.imdbId) }
+        }
+    }
+
+    /**
      * Rangée d'animés AniList/MAL ramenée à la structure TMDB.
      *
      * AniList publie une fiche PAR SAISON (« … Season 3 »). Affichées telles
@@ -179,13 +236,31 @@ class FrUnifiedProvider : MainAPI() {
                 // « kitsu:… ». On traite chaque cas plutôt que de tout jeter.
                 val tmdbId = meta.tmdbId
                 val imdb = meta.imdbId
-                when {
-                    tmdbId != null -> TmdbCatalog.byTmdbId(tmdbId, meta.type)
-                    imdb != null -> TmdbCatalog.byImdb(imdb, meta.type)
-                    else -> TmdbCatalog.searchBest(
-                        TitleMatch.stripSeason(meta.name), meta.year
-                    )
-                }
+                val viaTmdb = runCatching {
+                    when {
+                        tmdbId != null -> TmdbCatalog.byTmdbId(tmdbId, meta.type)
+                        imdb != null -> TmdbCatalog.byImdb(imdb, meta.type)
+                        else -> TmdbCatalog.searchBest(
+                            TitleMatch.stripSeason(meta.name), meta.year
+                        )
+                    }
+                }.getOrNull()
+
+                // NE JAMAIS jeter une entrée que TMDB ne connaît pas : c'est ce
+                // qui vidait entièrement les rangées (AIO Metadata publie des
+                // identifiants absents de TMDB, et sans clé TMDB valide TOUTES
+                // les entrées disparaissaient). On retombe sur la fiche fournie
+                // par l'addon lui-même, exactement comme le fait StremioC.
+                viaTmdb ?: CatalogItem(
+                    id = CatalogId("stremio", meta.type, meta.id),
+                    title = meta.name,
+                    originalTitle = null,
+                    year = meta.year,
+                    posterUrl = meta.poster,
+                    backdropUrl = null,
+                    overview = null,
+                    rating10 = null
+                )
             }
         }.awaitAll().filterNotNull().distinctBy { it.id.serialize() }
     }
@@ -236,6 +311,7 @@ class FrUnifiedProvider : MainAPI() {
             when (id.catalog) {
                 "anilist" -> loadAnime(id)
                 "mal" -> loadMalAnime(id)
+                "stremio" -> loadStremioMeta(id)
                 else -> loadTmdb(id)
             }
         } catch (c: CancellationException) {

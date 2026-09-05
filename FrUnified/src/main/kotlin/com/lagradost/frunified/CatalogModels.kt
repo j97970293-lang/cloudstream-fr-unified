@@ -23,7 +23,7 @@ data class CatalogId(
     fun serialize(): String = "https://frunified.fr/$catalog/$kind/$id"
 
     companion object {
-        private val CATALOGS = setOf("tmdb", "anilist", "mal")
+        private val CATALOGS = setOf("tmdb", "anilist", "mal", "stremio")
 
         private fun normalizeKind(kind: String): String = when (kind.lowercase()) {
             "film", "movie", "movies" -> "movie"

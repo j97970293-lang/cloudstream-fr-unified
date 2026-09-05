@@ -174,6 +174,58 @@ object StremioClient {
         }
     }.getOrDefault(emptyList())
 
+    /** Fiche détaillée renvoyée par `/meta/<type>/<id>.json`. */
+    data class MetaDetail(
+        val name: String,
+        val poster: String?,
+        val description: String?,
+        val year: Int?,
+        val imdbId: String?,
+        val videos: List<MetaVideo>
+    ) {
+        val isSeries: Boolean get() = videos.isNotEmpty()
+    }
+
+    data class MetaVideo(val title: String, val season: Int?, val episode: Int?)
+
+    /**
+     * Détail d'une fiche auprès de l'addon (comme le fait StremioC).
+     * Permet d'afficher une entrée que TMDB ne connaît pas.
+     */
+    suspend fun meta(addon: String, type: String, id: String): MetaDetail? = runCatching {
+        val base = base(addon)
+        val encoded = java.net.URLEncoder.encode(id, "UTF-8").replace("+", "%20")
+        val raw = app.get("$base/meta/$type/$encoded.json", timeout = 20).text
+        if (!raw.trimStart().startsWith("{")) return null
+        val m = JSONObject(raw).optJSONObject("meta") ?: return null
+
+        val vids = m.optJSONArray("videos")
+        val videos = (0 until (vids?.length() ?: 0)).mapNotNull { i ->
+            val v = vids?.optJSONObject(i) ?: return@mapNotNull null
+            val season = v.optInt("season", -1).takeIf { it >= 0 }
+            val ep = v.optInt("episode", -1).takeIf { it >= 0 }
+                ?: v.optInt("number", -1).takeIf { it >= 0 }
+            MetaVideo(
+                title = v.optString("title").takeIf { it.isNotBlank() }
+                    ?: v.optString("name").takeIf { it.isNotBlank() }
+                    ?: "Épisode ${ep ?: i + 1}",
+                season = season,
+                episode = ep
+            )
+        }
+
+        MetaDetail(
+            name = m.optString("name").takeIf { it.isNotBlank() } ?: return null,
+            poster = m.optString("poster").takeIf { it.startsWith("http") },
+            description = m.optString("description").takeIf { it.isNotBlank() },
+            year = Regex("(19|20)\\d{2}").find(
+                m.optString("year") + " " + m.optString("releaseInfo")
+            )?.value?.toIntOrNull(),
+            imdbId = Regex("tt\\d{6,}").find(m.optString("imdb_id") + " " + id)?.value,
+            videos = videos
+        )
+    }.getOrNull()
+
     data class StremioMeta(
         val id: String,
         val name: String,
