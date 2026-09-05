@@ -26,6 +26,7 @@ object FrSettings {
     private const val KEY_F_MINMB = "filter_min_mb"
     private const val KEY_F_MAXMB = "filter_max_mb"
     private const val KEY_F_DUBONLY = "filter_dub_strict"
+    private const val KEY_CAT_URLS = "stremio_catalog_urls"
     private const val KEY_USE_STREMIO = "use_stremio"
     private const val KEY_USE_SUBS = "use_subtitles"
     private const val KEY_SUB_LANGS = "subtitle_langs"
@@ -81,6 +82,18 @@ object FrSettings {
     var stremioUrls: List<String>
         get() = read(KEY_STREMIO, "").split("\n").map { it.trim() }.filter { it.isNotBlank() }
         set(value) = write(KEY_STREMIO, value.joinToString("\n"))
+
+    /**
+     * Addons Stremio dédiés au CATALOGUE, séparés des addons de flux.
+     *
+     * Un addon de catalogue (AIO Metadata, TMDB Addon…) n'a rien à faire dans
+     * la recherche de liens, et un addon de flux (Torrentio, Comet) n'a aucun
+     * catalogue à offrir. Les mélanger dans une seule liste rendait la
+     * détection illisible : chacun a désormais son champ.
+     */
+    var stremioCatalogUrls: List<String>
+        get() = read(KEY_CAT_URLS, "").split("\n").map { it.trim() }.filter { it.isNotBlank() }
+        set(value) = write(KEY_CAT_URLS, value.joinToString("\n"))
 
     /** Afficher les catalogues publiés par les addons Stremio sur l'accueil. */
     var useStremioCatalog: Boolean

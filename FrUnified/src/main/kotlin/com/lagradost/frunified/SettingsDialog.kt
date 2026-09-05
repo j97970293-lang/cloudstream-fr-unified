@@ -317,6 +317,24 @@ object SettingsDialog {
                 "animés que TMDB ne référence pas.", 11f, p.sub))
 
         // --- Catalogues Stremio ---
+        // Le champ de saisie des addons est créé ICI (et réutilisé plus bas en
+        // section 6) : le bouton « Détecter » doit lire ce que l'utilisateur
+        // vient de coller, PAS la liste enregistrée au dernier « Enregistrer ».
+        val stremioField = EditText(context).apply {
+            setText(FrSettings.stremioUrls.joinToString("\n"))
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            minLines = 3
+            setHorizontallyScrolling(false)
+        }.box(context, p)
+
+        // Champ DÉDIÉ aux addons de catalogue (séparé des addons de flux).
+        val catalogField = EditText(context).apply {
+            setText(FrSettings.stremioCatalogUrls.joinToString("\n"))
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            minLines = 2
+            setHorizontallyScrolling(false)
+        }.box(context, p)
+
         val stremioCatSwitch = Switch(context).apply {
             text = "Catalogues des addons Stremio"
             isChecked = FrSettings.useStremioCatalog
@@ -340,11 +358,27 @@ object SettingsDialog {
             detectBtn.isEnabled = false
             stremioCatInfo.setTextColor(p.sub)
             stremioCatInfo.text = "Détection en cours…"
+            // On enregistre d'abord ce qui est saisi, sinon un addon tout juste
+            // collé serait ignoré par la détection.
+            val catTyped = catalogField.text.toString()
+                .split("\n").map { it.trim() }.filter { it.isNotBlank() }
+            FrSettings.stremioCatalogUrls = catTyped
+            // Repli : si aucun addon de catalogue n'est renseigné, on tente
+            // quand même les addons de flux (certains publient les deux).
+            val streamTyped = stremioField.text.toString()
+                .split("\n").map { it.trim() }.filter { it.isNotBlank() }
+            FrSettings.stremioUrls = streamTyped
+            val typed = (catTyped + streamTyped).distinct()
             GlobalScope.launch {
                 val rows = mutableListOf<String>()
-                FrSettings.stremioUrls.forEach { addon ->
-                    runCatching { StremioClient.catalogs(addon) }.getOrDefault(emptyList())
-                        .forEach { c ->
+                val errors = mutableListOf<String>()
+                typed.forEach { addon ->
+                    val found = runCatching { StremioClient.catalogs(addon) }
+                        .onFailure { errors += "injoignable" }
+                        .getOrDefault(emptyList())
+                    if (found.isEmpty()) errors += StremioClient.base(addon)
+                        .removePrefix("https://").take(28)
+                    found.forEach { c ->
                             rows += listOf(
                                 c.addon, c.type, c.id,
                                 c.name.replace("#", " "), c.extra.orEmpty()
@@ -354,18 +388,33 @@ object SettingsDialog {
                 FrSettings.stremioCatalogRows = rows
                 withContext(Dispatchers.Main) {
                     stremioCatInfo.setTextColor(if (rows.isEmpty()) p.err else p.ok)
-                    stremioCatInfo.text = if (rows.isEmpty())
-                        "Aucun catalogue exploitable trouvé. Torrentio et Comet ne " +
-                            "publient que des flux, pas de catalogue : essayez un addon " +
-                            "de type catalogue (AIO Metadata, Cinemeta, TMDB Addon…)."
-                    else "${rows.size} rangée(s) détectée(s). Cochez-les dans « Rangées " +
-                        "de l'accueil », puis rouvrez l'accueil."
+                    stremioCatInfo.text = when {
+                        typed.isEmpty() ->
+                            "Aucun addon saisi : collez une URL de manifeste ci-dessous " +
+                                "(section « Addons Stremio »), puis relancez la détection."
+                        rows.isEmpty() ->
+                            "Aucun catalogue trouvé sur : " + errors.joinToString(", ") +
+                                ".\nTorrentio et Comet ne publient que des flux. Vérifiez " +
+                                "que l'URL se termine par /manifest.json et que l'addon " +
+                                "est bien configuré (AIO Metadata exige une configuration)."
+                        else ->
+                            "${rows.size} rangée(s) détectée(s) — cochez-les dans " +
+                                "« 🗂️ Rangées de l'accueil », enregistrez, puis " +
+                                "REDÉMARREZ CloudStream (l'accueil n'est lu qu'au démarrage)."
+                    }
                     detectBtn.isEnabled = true
                 }
             }
         }
         sCat.addToBody(stremioCatSwitch)
         sCat.addToBody(stremioFirstSwitch)
+        sCat.addToBody(TextView(context).label(context,
+            "Addons de CATALOGUE (une URL de manifeste par ligne)", 12f, p.title))
+        sCat.addToBody(TextView(context).label(context,
+            "Ex. AIO Metadata, TMDB Addon. Différent des addons de FLUX " +
+                "(Torrentio, Comet) qui se règlent dans « Addons Stremio ». " +
+                "Collez l'URL complète, terminée par /manifest.json.", 11f, p.sub))
+        sCat.addToBody(catalogField)
         sCat.addToBody(detectBtn)
         sCat.addToBody(stremioCatInfo)
         root.addView(sCat)
@@ -572,12 +621,6 @@ object SettingsDialog {
                 "de quoi lire une vidéo) et/ou un CATALOGUE (des listes à parcourir). " +
                 "Collez ici toutes vos URL, une par ligne — les deux types cohabitent.",
             11f, p.sub))
-        val stremioField = EditText(context).apply {
-            setText(FrSettings.stremioUrls.joinToString("\n"))
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
-            minLines = 3
-            setHorizontallyScrolling(false)
-        }.box(context, p)
         sStremio.addToBody(stremioField)
 
         // --- Activation individuelle des addons de FLUX ---
@@ -651,15 +694,25 @@ object SettingsDialog {
                 text = "Ajouter ${addon.name}"
                 textSize = 12f
                 setOnClickListener {
-                    val current = FrSettings.stremioUrls
+                    // Un addon de catalogue va dans le champ catalogue,
+                    // un addon de flux dans le champ des flux.
+                    val isCatalog = addon.detail.startsWith("CATALOGUE")
+                    val current = if (isCatalog) FrSettings.stremioCatalogUrls
+                    else FrSettings.stremioUrls
                     if (current.any { StremioClient.base(it) == StremioClient.base(addon.url) }) {
                         Toast.makeText(context, "${addon.name} est déjà dans la liste.",
                             Toast.LENGTH_SHORT).show()
+                    } else if (isCatalog) {
+                        FrSettings.stremioCatalogUrls = current + addon.url
+                        catalogField.setText(FrSettings.stremioCatalogUrls.joinToString("\n"))
+                        Toast.makeText(context,
+                            "${addon.name} ajouté aux catalogues. Appuyez sur « Détecter ».",
+                            Toast.LENGTH_LONG).show()
                     } else {
                         FrSettings.stremioUrls = current + addon.url
                         stremioField.setText(FrSettings.stremioUrls.joinToString("\n"))
                         Toast.makeText(context,
-                            "${addon.name} ajouté. Utilisez « Détecter » pour ses catalogues.",
+                            "${addon.name} ajouté aux sources de flux.",
                             Toast.LENGTH_LONG).show()
                     }
                 }
@@ -748,6 +801,8 @@ object SettingsDialog {
 
                 FrSettings.useTmdbCatalog = tmdbCatSwitch.isChecked
                 FrSettings.useAnimeCatalog = animeCatSwitch.isChecked
+                FrSettings.stremioCatalogUrls = catalogField.text.toString()
+                    .split("\n").map { it.trim() }.filter { it.isNotBlank() }
                 FrSettings.useStremioCatalog = stremioCatSwitch.isChecked
                 FrSettings.stremioCatalogFirst = stremioFirstSwitch.isChecked
                 FrSettings.excludedQualities =
