@@ -1,10 +1,10 @@
 [
     {
         "iconUrl": "https://raw.githubusercontent.com/j97970293-lang/cloudstream-fr-unified/master/icon.png",
-        "fileHash": "sha256-fc564a8072d63a604940958dc0656f2282a7af774bcf322da8794b9f6720a3a4",
+        "fileHash": "sha256-0d90497b66da8253b0f301b4d54b335331324a9c8dd422f3ddb4937f04e249fa",
         "apiVersion": 1,
         "repositoryUrl": "https://github.com/j97970293-lang/cloudstream-fr-unified",
-        "fileSize": 153858,
+        "fileSize": 155660,
         "status": 1,
         "language": "fr",
         "authors": [
@@ -17,7 +17,7 @@
             "AnimeMovie",
             "Cartoon"
         ],
-        "version": 23,
+        "version": 24,
         "internalName": "FrUnified",
         "description": "FR Hub \u2014 catalogue unique TMDB + AniList qui AGR\u00c8GE vos extensions fran\u00e7aises install\u00e9es et vos addons Stremio (flux et catalogues). N'h\u00e9berge aucune source : filtres de qualit\u00e9/taille, VF-VOSTFR s\u00e9par\u00e9es, rang\u00e9es d'accueil r\u00e9ordonnables.",
         "url": "https://raw.githubusercontent.com/j97970293-lang/cloudstream-fr-unified/builds/FrUnified.cs3",
