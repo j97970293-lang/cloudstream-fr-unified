@@ -34,6 +34,89 @@ object StremioClient {
         .removeSuffix("/")
         .replace("stremio://", "https://")
 
+    // ------------------------------------------------------- catalogues
+
+    /** Une rangée de catalogue exposée par un addon Stremio. */
+    data class CatalogRow(
+        val addon: String,
+        val type: String,   // "movie" | "series" | "anime"…
+        val id: String,
+        val name: String
+    ) {
+        /** Encodé dans `mainPage`, sous la forme `stremio|<addon>#<type>#<id>`. */
+        fun encode(): String = "stremio|$addon#$type#$id"
+    }
+
+    /**
+     * Lit le manifeste d'un addon et retourne les catalogues qu'il publie.
+     * Les catalogues exigeant une saisie de l'utilisateur (`search` requis)
+     * sont ignorés : ils ne peuvent pas alimenter une rangée d'accueil.
+     */
+    suspend fun catalogs(addon: String): List<CatalogRow> = runCatching {
+        val base = base(addon)
+        val manifest = JSONObject(app.get("$base/manifest.json", timeout = 20).text)
+        val addonName = manifest.optString("name").takeIf { it.isNotBlank() } ?: "Stremio"
+        val array = manifest.optJSONArray("catalogs") ?: return emptyList()
+
+        (0 until array.length()).mapNotNull { i ->
+            val cat = array.optJSONObject(i) ?: return@mapNotNull null
+            val type = cat.optString("type").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val id = cat.optString("id").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+
+            // Un « extra » marqué required = true rend le catalogue inutilisable ici.
+            val required = cat.optJSONArray("extra")?.let { extras ->
+                (0 until extras.length()).any { j ->
+                    extras.optJSONObject(j)?.optBoolean("isRequired", false) == true
+                }
+            } ?: false
+            if (required) return@mapNotNull null
+
+            val label = cat.optString("name").takeIf { it.isNotBlank() } ?: id
+            CatalogRow(base, type, id, "$addonName · $label")
+        }
+    }.getOrDefault(emptyList())
+
+    /**
+     * Récupère les métadonnées d'une rangée de catalogue.
+     *
+     * Les entrées Stremio portent en général un identifiant IMDb (`tt…`). On le
+     * conserve pour que la fiche reste rattachée au catalogue TMDB habituel :
+     * une seule fiche par série, saisons à l'intérieur.
+     */
+    suspend fun catalogItems(row: CatalogRow, page: Int): List<StremioMeta> = runCatching {
+        // Stremio pagine par tranches de 100 via l'extra « skip ».
+        val skip = (page - 1) * 100
+        val suffix = if (skip > 0) "/skip=$skip.json" else ".json"
+        val url = "${row.addon}/catalog/${row.type}/${row.id}$suffix"
+        val json = JSONObject(app.get(url, timeout = 25).text)
+        val metas = json.optJSONArray("metas") ?: return emptyList()
+
+        (0 until metas.length()).mapNotNull { i ->
+            val meta = metas.optJSONObject(i) ?: return@mapNotNull null
+            val id = meta.optString("id").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val name = meta.optString("name").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            StremioMeta(
+                id = id,
+                name = name,
+                poster = meta.optString("poster").takeIf { it.startsWith("http") },
+                type = meta.optString("type").takeIf { it.isNotBlank() } ?: row.type,
+                year = Regex("(19|20)\\d{2}").find(meta.optString("releaseInfo"))
+                    ?.value?.toIntOrNull()
+            )
+        }
+    }.getOrDefault(emptyList())
+
+    data class StremioMeta(
+        val id: String,
+        val name: String,
+        val poster: String?,
+        val type: String,
+        val year: Int?
+    ) {
+        /** `tt123` éventuel (les addons dérivent souvent leur id d'IMDb). */
+        val imdbId: String? get() = Regex("tt\\d{6,}").find(id)?.value
+    }
+
     /** Identifiant Stremio : `tt123` pour un film, `tt123:1:2` pour un épisode. */
     private fun stremioId(payload: PlayPayload): Pair<String, String>? {
         val imdb = payload.imdbId?.takeIf { it.startsWith("tt") } ?: return null

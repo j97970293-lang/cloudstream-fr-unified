@@ -16,6 +16,9 @@ object FrSettings {
     private const val KEY_STREMIO = "stremio_urls"
     private const val KEY_USE_LOCAL = "use_local_sources"
     private const val KEY_SHOW_ALL_SOURCES = "show_all_sources"
+    private const val KEY_STREMIO_CATALOG = "use_stremio_catalog"
+    private const val KEY_STREMIO_FIRST = "stremio_catalog_first"
+    private const val KEY_STREMIO_ROWS = "stremio_catalog_rows"
     private const val KEY_USE_STREMIO = "use_stremio"
     private const val KEY_USE_SUBS = "use_subtitles"
     private const val KEY_SUB_LANGS = "subtitle_langs"
@@ -71,6 +74,24 @@ object FrSettings {
     var stremioUrls: List<String>
         get() = read(KEY_STREMIO, "").split("\n").map { it.trim() }.filter { it.isNotBlank() }
         set(value) = write(KEY_STREMIO, value.joinToString("\n"))
+
+    /** Afficher les catalogues publiés par les addons Stremio sur l'accueil. */
+    var useStremioCatalog: Boolean
+        get() = readBool(KEY_STREMIO_CATALOG, false)
+        set(value) = writeBool(KEY_STREMIO_CATALOG, value)
+
+    /** Placer les rangées Stremio avant celles de TMDB. */
+    var stremioCatalogFirst: Boolean
+        get() = readBool(KEY_STREMIO_FIRST, false)
+        set(value) = writeBool(KEY_STREMIO_FIRST, value)
+
+    /**
+     * Rangées Stremio détectées, mémorisées pour bâtir l'accueil sans appel
+     * réseau : une ligne par rangée, « addon#type#id#nom ».
+     */
+    var stremioCatalogRows: List<String>
+        get() = read(KEY_STREMIO_ROWS, "").split("\n").map { it.trim() }.filter { it.isNotBlank() }
+        set(value) = write(KEY_STREMIO_ROWS, value.joinToString("\n"))
 
     /** Utiliser les extensions FR installées comme sources de liens. */
     var useLocalSources: Boolean

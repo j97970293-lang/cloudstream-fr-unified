@@ -106,6 +106,22 @@ object TmdbCatalog {
         return best.takeIf { TitleMatch.score(listOf(query), it.title, year, it.year) >= 0.55 }
     }
 
+    /**
+     * Retrouve une fiche TMDB à partir d'un identifiant IMDb (`tt…`).
+     * Sert à rattacher les entrées des addons Stremio au catalogue habituel.
+     */
+    suspend fun byImdb(imdbId: String, hint: String? = null): CatalogItem? {
+        val json = get("find/$imdbId", mapOf("external_source" to "imdb_id")) ?: return null
+        val preferTv = hint?.contains("series", true) == true || hint?.contains("tv", true) == true
+
+        val tv = json.optJSONArray("tv_results")
+            ?.optJSONObject(0)?.let { toItem(it, "tv") }
+        val movie = json.optJSONArray("movie_results")
+            ?.optJSONObject(0)?.let { toItem(it, "movie") }
+
+        return if (preferTv) tv ?: movie else movie ?: tv
+    }
+
     suspend fun row(path: String, page: Int, params: Map<String, String> = emptyMap(), kind: String? = null): List<CatalogItem> =
         list(get(path, params + mapOf("page" to page.toString())), kind)
 

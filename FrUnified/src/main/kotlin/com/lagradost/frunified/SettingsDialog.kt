@@ -311,6 +311,59 @@ object SettingsDialog {
         }
         sCat.addToBody(tmdbCatSwitch)
         sCat.addToBody(animeCatSwitch)
+        sCat.addToBody(TextView(context).label(context,
+            "TMDB regroupe toutes les saisons dans UNE fiche. AniList/MAL créent " +
+                "une fiche par saison : ce catalogue sert de complément pour les " +
+                "animés que TMDB ne référence pas.", 11f, p.sub))
+
+        // --- Catalogues Stremio ---
+        val stremioCatSwitch = Switch(context).apply {
+            text = "Catalogues des addons Stremio"
+            isChecked = FrSettings.useStremioCatalog
+            setTextColor(p.title)
+        }
+        val stremioFirstSwitch = Switch(context).apply {
+            text = "Placer les catalogues Stremio en premier"
+            isChecked = FrSettings.stremioCatalogFirst
+            setTextColor(p.title)
+        }
+        val stremioCatInfo = TextView(context).label(context,
+            FrSettings.stremioCatalogRows.size.let {
+                if (it > 0) "$it rangée(s) détectée(s)."
+                else "Aucune rangée détectée : renseignez vos addons (section 6) puis appuyez sur Détecter."
+            }, 11f, p.sub)
+        val detectBtn = Button(context).apply {
+            text = "🔎  Détecter les catalogues des addons"
+            textSize = 13f
+        }
+        detectBtn.setOnClickListener {
+            detectBtn.isEnabled = false
+            stremioCatInfo.setTextColor(p.sub)
+            stremioCatInfo.text = "Détection en cours…"
+            GlobalScope.launch {
+                val rows = mutableListOf<String>()
+                FrSettings.stremioUrls.forEach { addon ->
+                    runCatching { StremioClient.catalogs(addon) }.getOrDefault(emptyList())
+                        .forEach { c ->
+                            rows += listOf(c.addon, c.type, c.id, c.name).joinToString("#")
+                        }
+                }
+                FrSettings.stremioCatalogRows = rows
+                withContext(Dispatchers.Main) {
+                    stremioCatInfo.setTextColor(if (rows.isEmpty()) p.err else p.ok)
+                    stremioCatInfo.text = if (rows.isEmpty())
+                        "Aucun catalogue exploitable trouvé. Torrentio et Comet ne " +
+                            "publient que des flux, pas de catalogue : essayez un addon " +
+                            "de type catalogue (Cinemeta, TMDB Addon…)."
+                    else "${rows.size} rangée(s) détectée(s). Rouvrez l'accueil pour les voir."
+                    detectBtn.isEnabled = true
+                }
+            }
+        }
+        sCat.addToBody(stremioCatSwitch)
+        sCat.addToBody(stremioFirstSwitch)
+        sCat.addToBody(detectBtn)
+        sCat.addToBody(stremioCatInfo)
         root.addView(sCat)
 
         // ================================================== 5b. Sources CloudStream
@@ -511,6 +564,8 @@ object SettingsDialog {
 
                 FrSettings.useTmdbCatalog = tmdbCatSwitch.isChecked
                 FrSettings.useAnimeCatalog = animeCatSwitch.isChecked
+                FrSettings.useStremioCatalog = stremioCatSwitch.isChecked
+                FrSettings.stremioCatalogFirst = stremioFirstSwitch.isChecked
 
                 FrSettings.tmdbApiKey = tmdbField.text.toString()
                 FrSettings.apiTokens = tokensField.text.toString()

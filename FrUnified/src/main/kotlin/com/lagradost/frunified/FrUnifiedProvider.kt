@@ -12,6 +12,7 @@ import com.lagradost.cloudstream3.LoadResponse.Companion.addImdbId
 import com.lagradost.cloudstream3.LoadResponse.Companion.addMalId
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTMDbId
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
+import com.lagradost.cloudstream3.MainPageData
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.MainPageRequest
 import com.lagradost.cloudstream3.Score
@@ -63,7 +64,33 @@ class FrUnifiedProvider : MainAPI() {
         TvType.Cartoon
     )
 
-    override val mainPage = mainPageOf(
+    /**
+     * Rangées issues des addons Stremio, mémorisées dans les réglages
+     * (« addon#type#id#nom ») pour éviter tout appel réseau à la construction
+     * de l'accueil.
+     */
+    private fun stremioRows(): List<Pair<String, String>> =
+        if (!FrSettings.useStremioCatalog) emptyList()
+        else FrSettings.stremioCatalogRows.mapNotNull { line ->
+            val parts = line.split("#")
+            if (parts.size < 4) return@mapNotNull null
+            val addon = parts[0]
+            val type = parts[1]
+            val id = parts[2]
+            val name = parts.drop(3).joinToString("#")
+            ("stremio|$addon#$type#$id") to name
+        }
+
+    override val mainPage: List<MainPageData>
+        get() {
+            val stremio = stremioRows().map { (data, name) ->
+                MainPageData(name = name, data = data)
+            }
+            return if (FrSettings.stremioCatalogFirst) stremio + BASE_PAGE
+            else BASE_PAGE + stremio
+        }
+
+    private val BASE_PAGE = mainPageOf(
         "tmdb|trending/all/week" to "🔥 Tendances de la semaine",
         "tmdb|movie/popular" to "🎬 Films populaires",
         "tmdb|movie/now_playing" to "🍿 Films récents",
@@ -71,8 +98,14 @@ class FrUnifiedProvider : MainAPI() {
         "tmdb|tv/popular" to "📺 Séries populaires",
         "tmdb|tv/on_the_air" to "🆕 Séries en cours",
         "tmdb|discover/tv?with_original_language=fr&sort_by=popularity.desc" to "🇫🇷 Séries françaises",
-        "anime|trending" to "🌸 Animés de la saison",
-        "anime|popular" to "🌸 Animés populaires",
+        // Sections animés servies par TMDB : une SEULE fiche par série, avec les
+        // saisons à l'intérieur (genre 16 = Animation, origine JP).
+        "tmdb|discover/tv?with_genres=16&with_origin_country=JP&sort_by=popularity.desc" to "🌸 Animés populaires",
+        "tmdb|discover/tv?with_genres=16&with_origin_country=JP&sort_by=first_air_date.desc&vote_count.gte=20" to "🆕 Animés récents",
+        "tmdb|discover/tv?with_genres=16&with_origin_country=JP&sort_by=vote_average.desc&vote_count.gte=200" to "⭐ Animés les mieux notés",
+        "tmdb|discover/movie?with_genres=16&with_origin_country=JP&sort_by=popularity.desc" to "🎞️ Films d'animation japonais",
+        // Repli AniList/MAL : découpage par saison, utile pour ce que TMDB ignore.
+        "anime|trending" to "🌸 Animés de la saison (AniList)",
         "tmdb|discover/movie?with_genres=16&sort_by=popularity.desc" to "🧸 Animation / jeunesse",
         "tmdb|movie/top_rated" to "⭐ Films les mieux notés",
         "tmdb|tv/top_rated" to "⭐ Séries les mieux notées"
@@ -90,6 +123,7 @@ class FrUnifiedProvider : MainAPI() {
             .let { it[0] to it.getOrElse(1) { "" } }
 
         val items = when (catalog) {
+            "stremio" -> stremioRow(target, page)
             "anime" -> AnimeCatalog.row(target, page)
             else -> {
                 val path = target.substringBefore("?")
@@ -102,6 +136,34 @@ class FrUnifiedProvider : MainAPI() {
         }
 
         return newHomePageResponse(request, items.map { it.toSearchResponse() }, hasNext = items.isNotEmpty())
+    }
+
+    /**
+     * Convertit une rangée d'addon Stremio en fiches du catalogue habituel.
+     *
+     * Les entrées Stremio portent un identifiant IMDb : on le retraduit en
+     * fiche TMDB pour conserver UNE fiche par série (saisons à l'intérieur) et
+     * garder le même comportement de lecture que le reste de l'accueil.
+     * Si la correspondance échoue, l'entrée est ignorée plutôt que d'afficher
+     * une fiche qui ne s'ouvrirait pas.
+     */
+    private suspend fun stremioRow(target: String, page: Int): List<CatalogItem> = coroutineScope {
+        val parts = target.split("#")
+        if (parts.size < 3) return@coroutineScope emptyList()
+        val row = StremioClient.CatalogRow(parts[0], parts[1], parts[2], "")
+        val metas = StremioClient.catalogItems(row, page)
+        if (metas.isEmpty()) return@coroutineScope emptyList()
+
+        metas.map { meta ->
+            async {
+                val imdb = meta.imdbId
+                if (imdb != null) {
+                    TmdbCatalog.byImdb(imdb, meta.type)
+                } else {
+                    TmdbCatalog.searchBest(meta.name, meta.year)
+                }
+            }
+        }.awaitAll().filterNotNull().distinctBy { it.id.serialize() }
     }
 
     // -------------------------------------------------------------- recherche
@@ -119,8 +181,21 @@ class FrUnifiedProvider : MainAPI() {
         }
 
         val tmdbItems = tmdb.await()
+
+        // TMDB fait autorité : il expose UNE fiche par série, saisons à
+        // l'intérieur. AniList/MAL découpent au contraire chaque saison en une
+        // fiche distincte (« One Piece », « One Piece Saison 2 »…), ce qui
+        // produisait trois entrées pour une même série.
+        //
+        // `TitleMatch.normalize` retire déjà les marqueurs de saison : deux
+        // fiches AniList d'une même série se réduisent donc au même titre, et
+        // seule la première survit. Si TMDB connaît déjà la série, aucune
+        // fiche AniList n'est ajoutée.
         val seen = tmdbItems.map { TitleMatch.normalize(it.title) }.toMutableSet()
-        val animeItems = anime.await().filter { item -> seen.add(TitleMatch.normalize(item.title)) }
+        val animeItems = anime.await().filter { item ->
+            val key = TitleMatch.normalize(item.title)
+            key.isNotBlank() && seen.add(key)
+        }
 
         (tmdbItems + animeItems).map { it.toSearchResponse() }
     }
