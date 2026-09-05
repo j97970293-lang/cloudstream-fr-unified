@@ -25,6 +25,27 @@ object TitleMatch {
         "vi" to "6", "vii" to "7", "viii" to "8", "ix" to "9", "x" to "10"
     )
 
+    /**
+     * Retire le marqueur de saison d'un titre en gardant sa lisibilité
+     * (contrairement à [normalize] qui écrase aussi la casse et la ponctuation).
+     *
+     * « Mushoku Tensei: Jobless Reincarnation Season 3 » → « Mushoku Tensei: Jobless Reincarnation »
+     *
+     * Sert à retrouver la fiche TMDB d'ensemble à partir d'une fiche AniList
+     * qui ne couvre qu'une saison.
+     */
+    fun stripSeason(input: String): String {
+        var value = input
+        val patterns = listOf(
+            Regex("(?i)\\s*[:\\-–—]?\\s*\\b(?:season|saison)\\s*[0-9]{1,2}\\b.*$"),
+            Regex("(?i)\\s*[:\\-–—]?\\s*\\b(?:season|saison)\\s+[ivx]+\\b.*$"),
+            Regex("(?i)\\s*[:\\-–—]?\\s*\\b(?:part|partie|cour)\\s*[0-9]{1,2}\\b.*$"),
+            Regex("(?i)\\s*\\b[0-9]{1,2}(?:nd|rd|th|st)\\s+season\\b.*$")
+        )
+        patterns.forEach { value = it.replace(value, "") }
+        return value.trim().trimEnd(':', '-', '–', '—', ',').trim().ifBlank { input }
+    }
+
     fun normalize(input: String): String {
         var value = Normalizer.normalize(input.lowercase(), Normalizer.Form.NFD)
             .replace(Regex("\\p{Mn}+"), "")

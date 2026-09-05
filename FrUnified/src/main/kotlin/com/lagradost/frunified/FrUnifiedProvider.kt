@@ -86,30 +86,13 @@ class FrUnifiedProvider : MainAPI() {
             val stremio = stremioRows().map { (data, name) ->
                 MainPageData(name = name, data = data)
             }
-            return if (FrSettings.stremioCatalogFirst) stremio + BASE_PAGE
+            val ordered = if (FrSettings.stremioCatalogFirst) stremio + BASE_PAGE
             else BASE_PAGE + stremio
+            // Chaque rangée — d'origine comme Stremio — peut être décochée dans ⚙️.
+            return ordered.filter { FrSettings.isRowEnabled(it.data) }
+                .ifEmpty { ordered }
         }
 
-    private val BASE_PAGE = mainPageOf(
-        "tmdb|trending/all/week" to "🔥 Tendances de la semaine",
-        "tmdb|movie/popular" to "🎬 Films populaires",
-        "tmdb|movie/now_playing" to "🍿 Films récents",
-        "tmdb|discover/movie?with_original_language=fr&sort_by=popularity.desc" to "🇫🇷 Films français",
-        "tmdb|tv/popular" to "📺 Séries populaires",
-        "tmdb|tv/on_the_air" to "🆕 Séries en cours",
-        "tmdb|discover/tv?with_original_language=fr&sort_by=popularity.desc" to "🇫🇷 Séries françaises",
-        // Sections animés servies par TMDB : une SEULE fiche par série, avec les
-        // saisons à l'intérieur (genre 16 = Animation, origine JP).
-        "tmdb|discover/tv?with_genres=16&with_origin_country=JP&sort_by=popularity.desc" to "🌸 Animés populaires",
-        "tmdb|discover/tv?with_genres=16&with_origin_country=JP&sort_by=first_air_date.desc&vote_count.gte=20" to "🆕 Animés récents",
-        "tmdb|discover/tv?with_genres=16&with_origin_country=JP&sort_by=vote_average.desc&vote_count.gte=200" to "⭐ Animés les mieux notés",
-        "tmdb|discover/movie?with_genres=16&with_origin_country=JP&sort_by=popularity.desc" to "🎞️ Films d'animation japonais",
-        // Repli AniList/MAL : découpage par saison, utile pour ce que TMDB ignore.
-        "anime|trending" to "🌸 Animés de la saison (AniList)",
-        "tmdb|discover/movie?with_genres=16&sort_by=popularity.desc" to "🧸 Animation / jeunesse",
-        "tmdb|movie/top_rated" to "⭐ Films les mieux notés",
-        "tmdb|tv/top_rated" to "⭐ Séries les mieux notées"
-    )
 
     /** Exécute un bloc en avalant toute erreur de liaison (API absente selon la version). */
     private inline fun safe(block: () -> Unit) {
@@ -124,7 +107,7 @@ class FrUnifiedProvider : MainAPI() {
 
         val items = when (catalog) {
             "stremio" -> stremioRow(target, page)
-            "anime" -> AnimeCatalog.row(target, page)
+            "anime" -> animeRowUnified(target, page)
             else -> {
                 val path = target.substringBefore("?")
                 val params = target.substringAfter("?", "")
@@ -136,6 +119,33 @@ class FrUnifiedProvider : MainAPI() {
         }
 
         return newHomePageResponse(request, items.map { it.toSearchResponse() }, hasNext = items.isNotEmpty())
+    }
+
+    /**
+     * Rangée d'animés AniList/MAL ramenée à la structure TMDB.
+     *
+     * AniList publie une fiche PAR SAISON (« … Season 3 »). Affichées telles
+     * quelles, ces entrées cassaient la cohérence de l'accueil : on voyait
+     * « Mushoku Tensei Season 3 » à côté de fiches TMDB regroupant toutes les
+     * saisons. On retraduit donc chaque entrée vers sa fiche TMDB (titre
+     * débarrassé du marqueur de saison), et on ne conserve l'entrée AniList
+     * d'origine que si TMDB ne connaît pas la série.
+     */
+    private suspend fun animeRowUnified(target: String, page: Int): List<CatalogItem> = coroutineScope {
+        val raw = AnimeCatalog.row(target, page)
+        if (raw.isEmpty()) return@coroutineScope emptyList()
+
+        val resolved = raw.map { item ->
+            async {
+                val baseTitle = TitleMatch.stripSeason(item.title)
+                val viaTmdb = runCatching { TmdbCatalog.searchBest(baseTitle, null) }.getOrNull()
+                viaTmdb ?: item
+            }
+        }.awaitAll()
+
+        // Une même série découpée en 3 saisons converge vers la même fiche TMDB :
+        // on ne la garde qu'une fois.
+        resolved.distinctBy { it.id.serialize() }
     }
 
     /**
@@ -595,7 +605,7 @@ class FrUnifiedProvider : MainAPI() {
 
         // 2. Addons Stremio configurés (Torrentio, Comet, debrid perso…)
         if (FrSettings.useStremio) {
-            FrSettings.stremioUrls.forEach { addon ->
+            FrSettings.activeStreamAddons.forEach { addon ->
                 linkJobs += async {
                     runCatching {
                         withTimeoutOrNull(45_000L) { StremioClient.streams(addon, payload, callback) } ?: false
@@ -606,7 +616,7 @@ class FrUnifiedProvider : MainAPI() {
 
         // 3. Sous-titres externes (n'entrent pas dans le décompte des liens)
         if (FrSettings.useSubtitles) {
-            (FrSettings.stremioUrls + FrSettings.DEFAULT_SUBTITLE_ADDON).distinct().forEach { addon ->
+            (FrSettings.activeStreamAddons + FrSettings.DEFAULT_SUBTITLE_ADDON).distinct().forEach { addon ->
                 sideJobs += async {
                     runCatching {
                         withTimeoutOrNull(25_000L) { StremioClient.subtitles(addon, payload, subtitleCallback) } ?: false
@@ -651,5 +661,27 @@ class FrUnifiedProvider : MainAPI() {
 
     companion object {
         const val PROVIDER_NAME = "FR Unifié"
+
+        /** Rangées du catalogue d'origine, exposées pour l'écran ⚙️. */
+        val BASE_PAGE = mainPageOf(
+        "tmdb|trending/all/week" to "🔥 Tendances de la semaine",
+        "tmdb|movie/popular" to "🎬 Films populaires",
+        "tmdb|movie/now_playing" to "🍿 Films récents",
+        "tmdb|discover/movie?with_original_language=fr&sort_by=popularity.desc" to "🇫🇷 Films français",
+        "tmdb|tv/popular" to "📺 Séries populaires",
+        "tmdb|tv/on_the_air" to "🆕 Séries en cours",
+        "tmdb|discover/tv?with_original_language=fr&sort_by=popularity.desc" to "🇫🇷 Séries françaises",
+        // Sections animés servies par TMDB : une SEULE fiche par série, avec les
+        // saisons à l'intérieur (genre 16 = Animation, origine JP).
+        "tmdb|discover/tv?with_genres=16&with_origin_country=JP&sort_by=popularity.desc" to "🌸 Animés populaires",
+        "tmdb|discover/tv?with_genres=16&with_origin_country=JP&sort_by=first_air_date.desc&vote_count.gte=20" to "🆕 Animés récents",
+        "tmdb|discover/tv?with_genres=16&with_origin_country=JP&sort_by=vote_average.desc&vote_count.gte=200" to "⭐ Animés les mieux notés",
+        "tmdb|discover/movie?with_genres=16&with_origin_country=JP&sort_by=popularity.desc" to "🎞️ Films d'animation japonais",
+        // Repli AniList/MAL : découpage par saison, utile pour ce que TMDB ignore.
+        "anime|trending" to "🌸 Animés de la saison (AniList)",
+        "tmdb|discover/movie?with_genres=16&sort_by=popularity.desc" to "🧸 Animation / jeunesse",
+        "tmdb|movie/top_rated" to "⭐ Films les mieux notés",
+        "tmdb|tv/top_rated" to "⭐ Séries les mieux notées"
+        )
     }
 }

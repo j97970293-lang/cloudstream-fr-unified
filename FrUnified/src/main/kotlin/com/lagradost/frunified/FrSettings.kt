@@ -19,6 +19,8 @@ object FrSettings {
     private const val KEY_STREMIO_CATALOG = "use_stremio_catalog"
     private const val KEY_STREMIO_FIRST = "stremio_catalog_first"
     private const val KEY_STREMIO_ROWS = "stremio_catalog_rows"
+    private const val KEY_ROWS_OFF = "disabled_rows"
+    private const val KEY_ADDONS_OFF = "disabled_stream_addons"
     private const val KEY_USE_STREMIO = "use_stremio"
     private const val KEY_USE_SUBS = "use_subtitles"
     private const val KEY_SUB_LANGS = "subtitle_langs"
@@ -92,6 +94,38 @@ object FrSettings {
     var stremioCatalogRows: List<String>
         get() = read(KEY_STREMIO_ROWS, "").split("\n").map { it.trim() }.filter { it.isNotBlank() }
         set(value) = write(KEY_STREMIO_ROWS, value.joinToString("\n"))
+
+    // --------------------------------------------- activation par élément
+
+    /**
+     * Rangées d'accueil désactivées (catalogue d'origine ET rangées Stremio),
+     * repérées par leur clé `data` — « tmdb|movie/popular », « stremio|… ».
+     */
+    private var disabledRows: Set<String>
+        get() = read(KEY_ROWS_OFF, "").split("\n").map { it.trim() }.filter { it.isNotBlank() }.toSet()
+        set(value) = write(KEY_ROWS_OFF, value.joinToString("\n"))
+
+    fun isRowEnabled(key: String): Boolean = key !in disabledRows
+
+    fun setRowEnabled(key: String, enabled: Boolean) {
+        disabledRows = if (enabled) disabledRows - key else disabledRows + key
+    }
+
+    /** Addons Stremio de FLUX désactivés (repérés par leur URL de base). */
+    private var disabledStreamAddons: Set<String>
+        get() = read(KEY_ADDONS_OFF, "").split("\n").map { it.trim() }.filter { it.isNotBlank() }.toSet()
+        set(value) = write(KEY_ADDONS_OFF, value.joinToString("\n"))
+
+    fun isStreamAddonEnabled(url: String): Boolean = url.trim() !in disabledStreamAddons
+
+    fun setStreamAddonEnabled(url: String, enabled: Boolean) {
+        val u = url.trim()
+        disabledStreamAddons = if (enabled) disabledStreamAddons - u else disabledStreamAddons + u
+    }
+
+    /** Addons de flux réellement interrogés. */
+    val activeStreamAddons: List<String>
+        get() = stremioUrls.filter { isStreamAddonEnabled(it) }
 
     /** Utiliser les extensions FR installées comme sources de liens. */
     var useLocalSources: Boolean

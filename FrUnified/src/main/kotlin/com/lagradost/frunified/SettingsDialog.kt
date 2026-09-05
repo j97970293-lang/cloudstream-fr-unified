@@ -517,10 +517,57 @@ object SettingsDialog {
         sCs.expand()
         root.addView(sCs)
 
+        // ================================================== 5c. Rangées d'accueil
+        val sRows = Section(context, Color.parseColor(ACCENTS[1]), "🗂️",
+            "Rangées de l'accueil", "Activer / désactiver chaque rangée", p)
+        val rowBoxes = mutableListOf<CheckBox>()
+        val baseRows = FrUnifiedProvider.BASE_PAGE.map { it.data to it.name }
+        val stremioRowsCfg = FrSettings.stremioCatalogRows.mapNotNull { line ->
+            val parts = line.split("#")
+            if (parts.size < 4) null
+            else ("stremio|${parts[0]}#${parts[1]}#${parts[2]}") to parts.drop(3).joinToString("#")
+        }
+        fun refreshRowCount() {
+            val on = rowBoxes.count { it.isChecked }
+            sRows.setSummary("$on / ${rowBoxes.size} rangées affichées")
+        }
+        fun addRowGroup(title: String, rows: List<Pair<String, String>>) {
+            if (rows.isEmpty()) return
+            sRows.addToBody(TextView(context).label(context, title, 12f, p.sub))
+            rows.forEach { (key, label) ->
+                val cb = CheckBox(context).apply {
+                    text = label
+                    isChecked = FrSettings.isRowEnabled(key)
+                    setTextColor(p.title)
+                    textSize = 13f
+                    setOnCheckedChangeListener { _, v ->
+                        FrSettings.setRowEnabled(key, v)
+                        refreshRowCount()
+                    }
+                }
+                rowBoxes.add(cb)
+                sRows.addToBody(cb)
+            }
+        }
+        addRowGroup("Catalogue d'origine (TMDB / AniList)", baseRows)
+        addRowGroup("Catalogues Stremio détectés", stremioRowsCfg)
+        if (stremioRowsCfg.isEmpty()) {
+            sRows.addToBody(TextView(context).label(context,
+                "Aucune rangée Stremio : ajoutez un addon de type catalogue " +
+                    "(section 6b) puis appuyez sur Détecter.", 11f, p.sub))
+        }
+        refreshRowCount()
+        root.addView(sRows)
+
         // ================================================== 6. Addons Stremio
         val sStremio = Section(context, Color.parseColor(ACCENTS[5]), "📺",
-            "Addons Stremio", "Torrentio, Comet, debrid perso…", p,
+            "Addons Stremio", "Flux et catalogues", p,
             summary = { "${FrSettings.stremioUrls.size} addon(s)" })
+        sStremio.addToBody(TextView(context).label(context,
+            "Un addon Stremio peut fournir des FLUX (Torrentio, Comet, MediaFusion : " +
+                "de quoi lire une vidéo) et/ou un CATALOGUE (des listes à parcourir). " +
+                "Collez ici toutes vos URL, une par ligne — les deux types cohabitent.",
+            11f, p.sub))
         val stremioField = EditText(context).apply {
             setText(FrSettings.stremioUrls.joinToString("\n"))
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
@@ -528,6 +575,32 @@ object SettingsDialog {
             setHorizontallyScrolling(false)
         }.box(context, p)
         sStremio.addToBody(stremioField)
+
+        // --- Activation individuelle des addons de FLUX ---
+        sStremio.addToBody(TextView(context).label(context,
+            "Addons utilisés comme source de FLUX :", 12f, p.sub))
+        val addonBoxes = mutableListOf<Pair<String, CheckBox>>()
+        FrSettings.stremioUrls.forEach { url ->
+            val short = StremioClient.base(url)
+                .removePrefix("https://").removePrefix("http://").take(46)
+            val cb = CheckBox(context).apply {
+                text = short
+                isChecked = FrSettings.isStreamAddonEnabled(url)
+                setTextColor(p.title)
+                textSize = 12f
+                setOnCheckedChangeListener { _, v -> FrSettings.setStreamAddonEnabled(url, v) }
+            }
+            addonBoxes.add(url to cb)
+            sStremio.addToBody(cb)
+        }
+        if (addonBoxes.isEmpty()) {
+            sStremio.addToBody(TextView(context).label(context,
+                "Aucun addon enregistré pour l'instant.", 11f, p.sub))
+        } else {
+            sStremio.addToBody(TextView(context).label(context,
+                "Décocher un addon le retire des recherches de liens sans l'effacer. " +
+                    "Un addon purement catalogue peut rester décoché ici.", 11f, p.sub))
+        }
         root.addView(sStremio)
 
         // ================================================== 7. Sous-titres
