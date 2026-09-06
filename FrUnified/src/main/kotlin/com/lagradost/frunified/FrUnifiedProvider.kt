@@ -97,14 +97,31 @@ class FrUnifiedProvider : MainAPI() {
             // l'affichage. Sans elle, un catalogue ajouté n'apparaissait qu'après
             // « Détecter » PUIS un redémarrage complet de CloudStream, car
             // `mainPage` n'est lu qu'au chargement du plugin.
-            val live = if (FrSettings.useStremioCatalog && stremio.isEmpty())
+            // La rangée « en direct » est TOUJOURS proposée quand les catalogues
+            // Stremio sont activés : la présence de rangées mémorisées ne doit
+            // pas la supprimer (sinon un addon ajouté après coup reste invisible).
+            val live = if (FrSettings.useStremioCatalog)
                 listOf(MainPageData(name = "📺 Catalogues Stremio", data = "stremiolive|"))
             else emptyList()
 
-            val ordered = if (FrSettings.stremioCatalogFirst) live + stremio + BASE_PAGE
-            else BASE_PAGE + live + stremio
-            return ordered.filter { FrSettings.isRowEnabled(it.data) }
-                .ifEmpty { ordered }
+            // Les interrupteurs « Catalogue TMDB » et « Catalogue anime » ne
+            // filtraient QUE la recherche : l'accueil affichait toujours les
+            // mêmes rangées, quoi qu'on décoche. Ils agissent enfin ici.
+            val base = BASE_PAGE.filter { row ->
+                when {
+                    row.data.startsWith("anime|") -> FrSettings.useAnimeCatalog
+                    row.data.startsWith("tmdb|") -> FrSettings.useTmdbCatalog
+                    else -> true
+                }
+            }
+
+            val ordered = if (FrSettings.stremioCatalogFirst) live + stremio + base
+            else base + live + stremio
+
+            val visible = ordered.filter { FrSettings.isRowEnabled(it.data) }
+            // Si tout est décoché, on n'affiche QUE la rangée Stremio plutôt que
+            // de rétablir l'accueil complet (comportement précédent trompeur).
+            return visible.ifEmpty { live.ifEmpty { ordered } }
         }
 
 
@@ -220,6 +237,18 @@ class FrUnifiedProvider : MainAPI() {
         resolved.distinctBy { it.id.serialize() }
     }
 
+    /** Fiche « pancarte » : porte un message visible au lieu d'une rangée vide. */
+    private fun diagnosticItem(message: String) = CatalogItem(
+        id = CatalogId("stremio", "diag", message.take(60)),
+        title = "⚠ $message",
+        originalTitle = null,
+        year = null,
+        posterUrl = null,
+        backdropUrl = null,
+        overview = message,
+        rating10 = null
+    )
+
     /**
      * Découvre les catalogues des addons et renvoie leurs entrées, EN DIRECT.
      *
@@ -229,12 +258,24 @@ class FrUnifiedProvider : MainAPI() {
      */
     private suspend fun stremioLiveRow(page: Int): List<CatalogItem> = coroutineScope {
         val addons = (FrSettings.stremioCatalogUrls + FrSettings.stremioUrls).distinct()
-        if (addons.isEmpty()) return@coroutineScope emptyList()
+        if (addons.isEmpty()) {
+            return@coroutineScope listOf(
+                diagnosticItem("Aucun addon Stremio enregistré — ajoutez-en un dans ⚙️")
+            )
+        }
 
         val rows = addons.map { addon ->
             async { runCatching { StremioClient.catalogs(addon) }.getOrDefault(emptyList()) }
         }.awaitAll().flatten()
-        if (rows.isEmpty()) return@coroutineScope emptyList()
+        if (rows.isEmpty()) {
+            // Une rangée vide disparaît sans un mot : on affiche la raison réelle
+            // remontée par chaque addon, directement sur l'accueil.
+            val why = addons.joinToString(" | ") { a ->
+                val host = StremioClient.base(a).removePrefix("https://").take(24)
+                host + " : " + (StremioClient.lastCatalogError[StremioClient.base(a)] ?: "?")
+            }
+            return@coroutineScope listOf(diagnosticItem(why.take(180)))
+        }
 
         // On agrège les premières rangées : l'accueil doit rester rapide.
         rows.take(4).map { row ->
