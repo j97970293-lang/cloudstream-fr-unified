@@ -93,9 +93,16 @@ class FrUnifiedProvider : MainAPI() {
             val stremio = stremioRows().map { (data, name) ->
                 MainPageData(name = name, data = data)
             }
-            val ordered = if (FrSettings.stremioCatalogFirst) stremio + BASE_PAGE
-            else BASE_PAGE + stremio
-            // Chaque rangée — d'origine comme Stremio — peut être décochée dans ⚙️.
+            // Rangée « pont » : elle interroge les addons EN DIRECT au moment de
+            // l'affichage. Sans elle, un catalogue ajouté n'apparaissait qu'après
+            // « Détecter » PUIS un redémarrage complet de CloudStream, car
+            // `mainPage` n'est lu qu'au chargement du plugin.
+            val live = if (FrSettings.useStremioCatalog && stremio.isEmpty())
+                listOf(MainPageData(name = "📺 Catalogues Stremio", data = "stremiolive|"))
+            else emptyList()
+
+            val ordered = if (FrSettings.stremioCatalogFirst) live + stremio + BASE_PAGE
+            else BASE_PAGE + live + stremio
             return ordered.filter { FrSettings.isRowEnabled(it.data) }
                 .ifEmpty { ordered }
         }
@@ -113,6 +120,7 @@ class FrUnifiedProvider : MainAPI() {
             .let { it[0] to it.getOrElse(1) { "" } }
 
         val items = when (catalog) {
+            "stremiolive" -> stremioLiveRow(page)
             "stremio" -> stremioRow(target, page)
             "anime" -> animeRowUnified(target, page)
             else -> {
@@ -210,6 +218,39 @@ class FrUnifiedProvider : MainAPI() {
         // Une même série découpée en 3 saisons converge vers la même fiche TMDB :
         // on ne la garde qu'une fois.
         resolved.distinctBy { it.id.serialize() }
+    }
+
+    /**
+     * Découvre les catalogues des addons et renvoie leurs entrées, EN DIRECT.
+     *
+     * C'est l'approche de StremioC / SectionProvider : le manifeste est lu au
+     * moment d'afficher l'accueil, pas mémorisé à l'avance. Un addon ajouté
+     * fonctionne donc immédiatement, sans bouton « Détecter » ni redémarrage.
+     */
+    private suspend fun stremioLiveRow(page: Int): List<CatalogItem> = coroutineScope {
+        val addons = (FrSettings.stremioCatalogUrls + FrSettings.stremioUrls).distinct()
+        if (addons.isEmpty()) return@coroutineScope emptyList()
+
+        val rows = addons.map { addon ->
+            async { runCatching { StremioClient.catalogs(addon) }.getOrDefault(emptyList()) }
+        }.awaitAll().flatten()
+        if (rows.isEmpty()) return@coroutineScope emptyList()
+
+        // On agrège les premières rangées : l'accueil doit rester rapide.
+        rows.take(4).map { row ->
+            async { runCatching { StremioClient.catalogItems(row, page) }.getOrDefault(emptyList()) }
+        }.awaitAll().flatten().map { meta ->
+            CatalogItem(
+                id = CatalogId("stremio", meta.type, meta.id),
+                title = meta.name,
+                originalTitle = null,
+                year = meta.year,
+                posterUrl = meta.poster,
+                backdropUrl = null,
+                overview = null,
+                rating10 = null
+            )
+        }.distinctBy { it.id.serialize() }
     }
 
     /**

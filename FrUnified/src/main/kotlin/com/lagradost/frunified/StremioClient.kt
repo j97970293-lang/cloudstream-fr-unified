@@ -19,6 +19,9 @@ import org.json.JSONObject
  */
 object StremioClient {
 
+    /** Catalogue officiel Stremio : repli fiable pour les identifiants IMDb/TMDB. */
+    private const val CINEMETA = "https://v3-cinemeta.strem.io"
+
     private val TRACKERS = listOf(
         "udp://tracker.opentrackr.org:1337/announce",
         "udp://open.tracker.cl:1337/announce",
@@ -208,7 +211,19 @@ object StremioClient {
      * Détail d'une fiche auprès de l'addon (comme le fait StremioC).
      * Permet d'afficher une entrée que TMDB ne connaît pas.
      */
-    suspend fun meta(addon: String, type: String, id: String): MetaDetail? = runCatching {
+    private fun isImdbOrTmdb(id: String): Boolean =
+        Regex("tt\\d{6,}").containsMatchIn(id) || id.startsWith("tmdb:", true)
+
+    suspend fun meta(addon: String, type: String, id: String): MetaDetail? {
+        // Comme StremioC : pour un identifiant IMDb/TMDB standard, Cinemeta
+        // répond de façon fiable même quand l'addon d'origine ne sert pas /meta.
+        if ((type == "movie" || type == "series") && isImdbOrTmdb(id)) {
+            metaFrom(CINEMETA, type, id)?.let { return it }
+        }
+        return metaFrom(addon, type, id)
+    }
+
+    private suspend fun metaFrom(addon: String, type: String, id: String): MetaDetail? = runCatching {
         val base = base(addon)
         val encoded = java.net.URLEncoder.encode(id, "UTF-8").replace("+", "%20")
         val raw = app.get("$base/meta/$type/$encoded.json", timeout = 20).text
