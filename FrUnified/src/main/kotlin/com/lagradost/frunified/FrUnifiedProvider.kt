@@ -73,7 +73,12 @@ class FrUnifiedProvider : MainAPI() {
         "tmdb|discover/tv?with_original_language=fr&sort_by=popularity.desc" to "🇫🇷 Séries françaises",
         "anime|trending" to "🌸 Animés de la saison",
         "anime|popular" to "🌸 Animés populaires",
+        "tmdb|discover/tv?with_genres=16&with_original_language=ja&sort_by=popularity.desc" to "🇯🇵 Séries d'animation japonaise",
+        "tmdb|discover/movie?with_genres=16&with_original_language=ja&sort_by=popularity.desc" to "🇯🇵 Films d'animation japonaise",
         "tmdb|discover/movie?with_genres=16&sort_by=popularity.desc" to "🧸 Animation / jeunesse",
+        "tmdb|discover/movie?with_watch_providers=8|337|341&watch_region=FR&sort_by=popularity.desc" to "📡 Netflix, Prime, Disney+ FR",
+        "tmdb|discover/tv?with_watch_providers=8|337|341&watch_region=FR&sort_by=popularity.desc" to "📡 Séries Netflix, Prime, Disney+ FR",
+        "anime|top" to "⭐ Top animés",
         "tmdb|movie/top_rated" to "⭐ Films les mieux notés",
         "tmdb|tv/top_rated" to "⭐ Séries les mieux notées"
     )
