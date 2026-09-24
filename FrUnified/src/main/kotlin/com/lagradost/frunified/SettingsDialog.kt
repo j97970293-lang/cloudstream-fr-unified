@@ -390,6 +390,16 @@ object SettingsDialog {
         }
         sCat.addToBody(tmdbCatSwitch)
         sCat.addToBody(animeCatSwitch)
+        sCat.addToBody(TextView(context).label(context,
+            "Seuil d'appariement des titres (0.30 = permissif → 0.90 = strict).\n" +
+                "Permissif : plus de liens mais risque de faux appariements ;\n" +
+                "strict : seules les correspondances quasi exactes remontent.",
+            12f, p.sub).apply { setPadding(0, context.dp(8), 0, context.dp(2)) })
+        val thresholdField = EditText(context).apply {
+            setText(String.format(java.util.Locale.US, "%.2f", FrSettings.titleMatchThreshold))
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+        }.box(context, p)
+        sCat.addToBody(thresholdField)
         root.addView(sCat)
 
         // ================================================== 5. Fournisseurs
@@ -616,6 +626,8 @@ object SettingsDialog {
 
                 FrSettings.useTmdbCatalog = tmdbCatSwitch.isChecked
                 FrSettings.useAnimeCatalog = animeCatSwitch.isChecked
+                thresholdField.text.toString().toDoubleOrNull()
+                    ?.let { FrSettings.titleMatchThreshold = it }
 
                 FrSettings.nuvioConcurrency = concurrencyField.text.toString().toIntOrNull() ?: 6
                 FrSettings.nuvioMaxPerScraper = maxField.text.toString().toIntOrNull() ?: 12

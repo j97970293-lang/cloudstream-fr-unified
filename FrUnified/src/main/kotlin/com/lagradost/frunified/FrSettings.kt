@@ -35,6 +35,7 @@ object FrSettings {
     private const val KEY_COOKIES = "nuvio_cookies"
     private const val KEY_USE_TMDB = "use_tmdb_catalog"
     private const val KEY_USE_ANIME = "use_anime_catalog"
+    private const val KEY_MATCH = "title_match_threshold"
 
     /** Addon de sous-titres Stremio gratuit et sans clé, activé par défaut. */
     const val DEFAULT_SUBTITLE_ADDON = "https://opensubtitles-v3.strem.io"
@@ -263,6 +264,16 @@ object FrSettings {
     var useAnimeCatalog: Boolean
         get() = readBool(KEY_USE_ANIME, true)
         set(value) = writeBool(KEY_USE_ANIME, value)
+
+    /**
+     * Seuil d'appariement des titres (0.30 – 0.90).
+     * Plus bas = plus de liens mais risque de faux appariements ;
+     * plus haut = plus strict, moins de sources remontent des liens.
+     */
+    var titleMatchThreshold: Double
+        get() = read(KEY_MATCH, "0.58").toDoubleOrNull()
+            ?.coerceIn(0.30, 0.90) ?: TitleMatch.DEFAULT_ACCEPT_THRESHOLD
+        set(value) = write(KEY_MATCH, value.coerceIn(0.30, 0.90).toString())
 
     fun isNuvioEnabled(id: String): Boolean = id !in nuvioDisabled
 

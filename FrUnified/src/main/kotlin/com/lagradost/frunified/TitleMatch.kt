@@ -125,6 +125,15 @@ object TitleMatch {
         return result
     }
 
-    /** Seuil en dessous duquel on refuse un appariement (évite les faux liens). */
-    const val ACCEPT_THRESHOLD = 0.58
+    /**
+     * Seuil en dessous duquel on refuse un appariement (évite les faux liens).
+     * Réglable dans les réglages ⚙️ du plugin (Catalogues actifs → Seuil
+     * d'appariement) ; la constante n'est plus qu'un repli si les
+     * préférences sont indisponibles.
+     */
+    const val DEFAULT_ACCEPT_THRESHOLD = 0.58
+
+    val acceptThreshold: Double
+        get() = runCatching { FrSettings.titleMatchThreshold }
+            .getOrDefault(DEFAULT_ACCEPT_THRESHOLD)
 }

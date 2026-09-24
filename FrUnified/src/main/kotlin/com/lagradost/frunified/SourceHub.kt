@@ -178,7 +178,7 @@ object SourceHub {
                 val score = TitleMatch.score(
                     payload.titles, result.name, payload.year, candidateYear, wantedSeason
                 )
-                if (score >= TitleMatch.ACCEPT_THRESHOLD && (best == null || score > best!!.first)) {
+                if (score >= TitleMatch.acceptThreshold && (best == null || score > best!!.first)) {
                     best = score to result.url
                 }
             }
