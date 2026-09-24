@@ -76,7 +76,13 @@ export ANDROID_SDK_ROOT=/chemin/vers/android-sdk   # platforms;android-35 requis
 ./gradlew make makePluginsJson
 # → FrUnified/build/FrUnified.cs3   et   build/plugins.json
 ```
-JDK 17 requis (AGP 8.7).
+JDK 17 requis (AGP 8.7). Sur une machine avec peu de RAM :
+
+```bash
+./gradlew make makePluginsJson --no-daemon \
+  -Dorg.gradle.jvmargs="-Xmx1500m -XX:MaxMetaspaceSize=450m" \
+  -Pkotlin.compiler.execution.strategy=in-process
+```
 
 ## Comment fonctionne l'agrégation
 
